@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NavyMart – Inventory Store</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{--black:#04070d;--navy:#0b1730;--card:#0f1f3f;--line:#1c3263;--blue:#2f6bff;--sky:#7ea6ff;--text:#e8eefc;--muted:#8da0c7;--warn:#ffb020}
+*{box-sizing:border-box;margin:0}
+body{font-family:'Plus Jakarta Sans',sans-serif;background:linear-gradient(180deg,var(--black),var(--navy) 60%,var(--black));background-attachment:fixed;color:var(--text);min-height:100vh}
+header{position:sticky;top:0;z-index:5;background:var(--black);border-bottom:1px solid var(--line);display:flex;gap:20px;align-items:center;padding:14px 5vw}
+.logo{font-weight:800;font-size:1.5rem;color:var(--sky)}
+.search{flex:1;display:flex}
+.search input{flex:1;padding:12px 16px;border:1px solid var(--line);background:var(--navy);color:var(--text);border-radius:10px 0 0 10px;font:inherit}
+.search button{padding:0 22px;border:0;background:var(--blue);color:#fff;font:inherit;font-weight:600;border-radius:0 10px 10px 0;cursor:pointer}
+.cart{background:var(--card);border:1px solid var(--line);color:var(--text);padding:10px 16px;border-radius:10px;font:inherit;font-weight:600}
+main{padding:24px 5vw 60px}
+.banner{background:linear-gradient(110deg,var(--blue),#0b2a73 55%,var(--black));border-radius:18px;padding:36px 40px;margin-bottom:24px}
+.banner h1{font-size:clamp(1.6rem,4vw,2.6rem);font-weight:800}
+.banner p{color:#cfdcff;margin-top:6px}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:22px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chips a{padding:8px 16px;border-radius:99px;border:1px solid var(--line);color:var(--muted);text-decoration:none;font-weight:600;font-size:.9rem}
+.chips a.on,.chips a:hover{background:var(--blue);border-color:var(--blue);color:#fff}
+select{background:var(--card);color:var(--text);border:1px solid var(--line);padding:9px 12px;border-radius:8px;font:inherit}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:18px}
+.item{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;display:flex;flex-direction:column}
+.pic{height:150px;display:grid;place-items:center;font-size:4.5rem;background:radial-gradient(circle at 50% 40%,#1a3a7a,var(--navy))}
+.info{padding:14px;display:flex;flex-direction:column;gap:6px;flex:1}
+.cat{color:var(--muted);font-size:.8rem}
+.name{font-weight:600}
+.price{font-size:1.35rem;font-weight:800;color:var(--sky)}
+.stock{font-size:.8rem;color:#5ee0a0}
+.stock.low{color:var(--warn)}
+.add{margin-top:auto;padding:10px;border:0;border-radius:8px;background:var(--blue);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+.add:hover{background:#4a80ff}
+:focus-visible{outline:2px solid var(--sky);outline-offset:2px}
+details{margin-top:40px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 20px}
+summary{cursor:pointer;font-weight:600}
+form.new{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:14px}
+form.new input{padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--navy);color:var(--text);font:inherit}
+form.new button{background:var(--blue);color:#fff;border:0;border-radius:8px;font:inherit;font-weight:600;padding:10px;cursor:pointer}
+.empty{color:var(--muted);padding:40px 0}
+@media(max-width:640px){header{flex-wrap:wrap}.search{order:3;flex-basis:100%}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">NavyMart</div>
+  <form class="search" action="/">
+    <input name="q" value="{{ q }}" placeholder="Search products">
+    <input type="hidden" name="cat" value="{{ cat }}">
+    <button>Search</button>
+  </form>
+  <button class="cart" id="cart">Cart (0)</button>
+</header>
+
+<main>
+  <section class="banner">
+    <h1>Everything in stock, one place</h1>
+    <p>Live prices and stock straight from SQL Server.</p>
+  </section>
+
+  <div class="bar">
+    <div class="chips">
+      <a href="/?q={{ q }}&sort={{ sort }}" class="{{ 'on' if not cat }}">All</a>
+      {% for c in cats %}
+      <a href="/?cat={{ c }}&q={{ q }}&sort={{ sort }}" class="{{ 'on' if c == cat }}">{{ c }}</a>
+      {% endfor %}
+    </div>
+    <form action="/">
+      <input type="hidden" name="q" value="{{ q }}">
+      <input type="hidden" name="cat" value="{{ cat }}">
+      <select name="sort" onchange="this.form.submit()" aria-label="Sort products">
+        <option value="">Sort: Newest</option>
+        <option value="low" {{ 'selected' if sort == 'low' }}>Price: Low to High</option>
+        <option value="high" {{ 'selected' if sort == 'high' }}>Price: High to Low</option>
+      </select>
+    </form>
+  </div>
+
+  {% if products %}
+  <div class="grid">
+    {% for p in products %}
+    <article class="item">
+      <div class="pic">{{ p.Emoji }}</div>
+      <div class="info">
+        <span class="cat">{{ p.Category }}</span>
+        <span class="name">{{ p.Name }}</span>
+        <span class="price">Rs. {{ '{:,.0f}'.format(p.Price) }}</span>
+        {% if p.Stock <= 5 %}
+          <span class="stock low">Only {{ p.Stock }} left</span>
+        {% else %}
+          <span class="stock">{{ p.Stock }} in stock</span>
+        {% endif %}
+        <button class="add">Add to cart</button>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">No products match your search. Try another name or category.</p>
+  {% endif %}
+
+  <details>
+    <summary>Add a new product</summary>
+    <form class="new" action="/add" method="post">
+      <input name="name" placeholder="Product name" required>
+      <input name="category" placeholder="Category" required>
+      <input name="price" type="number" step="0.01" placeholder="Price" required>
+      <input name="stock" type="number" placeholder="Stock" required>
+      <input name="emoji" placeholder="Emoji (optional)">
+      <button>Save product</button>
+    </form>
+  </details>
+</main>
+
+<script>
+let n = 0;
+document.querySelectorAll('.add').forEach(b => b.onclick = () => {
+  document.getElementById('cart').textContent = `Cart (${++n})`;
+});
+</script>
+</body>
+</html>
