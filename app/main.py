@@ -217,7 +217,7 @@ def add_cart(pid):
     with engine.begin() as c:
         if existing:
             newq=min(p["stock"],existing["quantity"]+qty); c.execute(text("UPDATE cart_items SET quantity=:q WHERE id=:i"),{"q":newq,"i":existing["id"]})
-        else:c.execute(text("INSERT INTO cart_items(user_id,product_id,quantity,size,color) VALUES(:u,:p,:q,:s,:c)"),{"u":session["user_id"],"p":pid,"q=min" if False else min(qty,p["stock"]),"s":size,"c":color})
+        else:c.execute(text("INSERT INTO cart_items(user_id,product_id,quantity,size,color) VALUES(:u,:p,:q,:s,:c)"),{"u":session["user_id"],"p":pid,"q":min(qty,p["stock"]),"s":size,"c":color})
     return redirect(request.referrer or url_for("cart"))
 
 @app.get("/cart")
