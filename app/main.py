@@ -317,7 +317,6 @@ def tryon_status(job_id):
     return jsonify(r)
 
 @app.post("/api/assistant")
-@login_required
 def assistant():
     query=request.json.get("message","").strip() if request.is_json else request.form.get("message","").strip()
     if not query:return jsonify(error="Ask me about products, outfits, budgets, colours or sizes."),400
