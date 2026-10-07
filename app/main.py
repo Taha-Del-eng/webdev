@@ -271,7 +271,8 @@ def account():
     u=one("SELECT * FROM users WHERE id=:u",{"u":session["user_id"]})
     orders=rows("SELECT * FROM orders WHERE user_id=:u ORDER BY created_at DESC",{"u":session["user_id"]})
     ps=product_query("JOIN wishlist w ON w.product_id=p.id WHERE w.user_id=:u",{"u":session["user_id"]},limit=50)
-    return render_template("account.html",tab=request.args.get("tab","orders"),products=ps,orders=orders,user=u)
+    history=rows("SELECT h.*,p.name,p.image_url FROM tryon_history h JOIN products p ON p.id=h.product_id WHERE h.user_id=:u ORDER BY h.created_at DESC LIMIT 20",{"u":session["user_id"]})
+    return render_template("account.html",tab=request.args.get("tab","orders"),products=ps,orders=orders,history=history,user=u)
 
 @app.get("/orders/<int:oid>")
 @login_required
@@ -358,7 +359,9 @@ def admin():
     orders=rows("SELECT o.*,u.full_name,u.email FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at DESC LIMIT 20")
     products=product_query(limit=100)
     cats=rows("SELECT * FROM categories ORDER BY name")
-    return render_template("admin.html",stats=stats,orders=orders,products=products,categories=cats)
+    chart_status=rows("SELECT status,COUNT(*) n FROM orders GROUP BY status")
+    chart_categories=rows("SELECT category,SUM(oi.quantity*oi.price) sales FROM order_items oi JOIN products p ON p.id=oi.product_id GROUP BY category ORDER BY sales DESC LIMIT 8")
+    return render_template("admin.html",stats=stats,orders=orders,products=products,categories=cats,chart_status=chart_status,chart_categories=chart_categories)
 
 @app.post("/admin/product")
 @admin_required
