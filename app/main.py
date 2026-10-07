@@ -343,7 +343,20 @@ def assistant():
     matches=[product_dict(x) for x in rows(sql,params)]
     if not matches: matches=product_query(limit=6)
     total=sum(float(x["price"]) for x in matches[:3])
-    return jsonify(reply=f"I found {len(matches)} catalog matches. For a styled pick, I’d start with {matches[0]['name']} and build around its {matches[0]['colors'][0] if matches[0]['colors'] else 'neutral'} palette. {('The first three total about Rs. '+format(total,',.0f')+'.') if matches else ''}",products=matches[:6])
+    # Optional LLM layer: the model only receives live catalog matches, so it cannot invent unavailable products.
+    ak=os.getenv("AI_ASSISTANT_API_KEY"); au=os.getenv("AI_ASSISTANT_API_URL"); am=os.getenv("AI_ASSISTANT_MODEL")
+    if ak and au and am:
+        try:
+            import requests
+            catalog=[{"name":x["name"],"brand":x["brand"],"category":x["category"],"price":float(x["price"]),"colors":x["colors"],"sizes":x["sizes"],"stock":x["stock"],"rating":float(x["rating"])} for x in matches[:6]]
+            payload={"model":am,"messages":[{"role":"system","content":"You are Yours AI, a concise fashion shopping assistant. Recommend only products present in the supplied catalog. Mention price and availability when useful. Never invent a product."},{"role":"user","content":json.dumps({"question":query,"catalog":catalog})}],"temperature":0.4}
+            rr=requests.post(au,headers={"Authorization":f"Bearer {ak}","Content-Type":"application/json"},json=payload,timeout=20)
+            if rr.ok:
+                reply=rr.json()["choices"][0]["message"]["content"]
+                return jsonify(reply=reply,products=matches[:6])
+        except Exception:
+            pass
+    return jsonify(reply=f"I found {len(matches)} catalog matches. I’d start with {matches[0]['name']} and build around its {matches[0]['colors'][0] if matches[0]['colors'] else 'neutral'} palette. {('The first three total about Rs. '+format(total,',.0f')+'.') if matches else ''}",products=matches[:6])
 
 @app.get("/admin")
 @admin_required
