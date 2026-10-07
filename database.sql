@@ -1,30 +1,19 @@
--- Run this in SQL Server Management Studio 2022 (New Query -> Execute)
-CREATE DATABASE InventoryDB;
-GO
-USE InventoryDB;
-GO
-
-CREATE TABLE Products (
-    ProductID INT IDENTITY(1,1) PRIMARY KEY,
-    Name      NVARCHAR(100) NOT NULL,
-    Category  NVARCHAR(50)  NOT NULL,
-    Price     DECIMAL(10,2) NOT NULL,
-    Stock     INT           NOT NULL DEFAULT 0,
-    Emoji     NVARCHAR(10)  NOT NULL DEFAULT N'📦'
+-- Yours Mart production schema. PostgreSQL is recommended for deployment.
+CREATE TABLE IF NOT EXISTS users (
+  id BIGSERIAL PRIMARY KEY, full_name VARCHAR(120) NOT NULL, email VARCHAR(180) UNIQUE NOT NULL,
+  username VARCHAR(80) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
-GO
-
-INSERT INTO Products (Name, Category, Price, Stock, Emoji) VALUES
-(N'Wireless Earbuds Pro',   N'Electronics', 4999,  35, N'🎧'),
-(N'Smart Watch Series 5',   N'Electronics', 8999,  12, N'⌚'),
-(N'Bluetooth Speaker',      N'Electronics', 3499,  4,  N'🔊'),
-(N'Gaming Mouse RGB',       N'Electronics', 2799,  50, N'🖱️'),
-(N'Men Running Shoes',      N'Fashion',     5499,  22, N'👟'),
-(N'Leather Wallet',         N'Fashion',     1299,  60, N'👛'),
-(N'Women Handbag',          N'Fashion',     3999,  3,  N'👜'),
-(N'Sunglasses UV400',       N'Fashion',     999,   40, N'🕶️'),
-(N'Non-Stick Fry Pan',      N'Home',        1899,  18, N'🍳'),
-(N'Table Lamp LED',         N'Home',        1499,  27, N'💡'),
-(N'Cotton Bedsheet Set',    N'Home',        2999,  9,  N'🛏️'),
-(N'Water Bottle 1L',        N'Home',        599,   100,N'🍶');
-GO
+CREATE TABLE IF NOT EXISTS categories (id BIGSERIAL PRIMARY KEY, name VARCHAR(120) UNIQUE NOT NULL, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS products (
+  id BIGSERIAL PRIMARY KEY, name VARCHAR(180) NOT NULL, slug VARCHAR(220) UNIQUE NOT NULL, brand VARCHAR(120),
+  category VARCHAR(120) NOT NULL, description TEXT, price NUMERIC(12,2) NOT NULL, original_price NUMERIC(12,2),
+  discount NUMERIC(5,2) DEFAULT 0, stock INTEGER DEFAULT 0, sizes TEXT, colors TEXT, rating NUMERIC(3,2) DEFAULT 0,
+  review_count INTEGER DEFAULT 0, tags TEXT, image_url TEXT NOT NULL, additional_images TEXT,
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS cart_items (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL,product_id BIGINT NOT NULL,quantity INTEGER NOT NULL,size VARCHAR(30),color VARCHAR(50),UNIQUE(user_id,product_id,size,color));
+CREATE TABLE IF NOT EXISTS wishlist (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL,product_id BIGINT NOT NULL,UNIQUE(user_id,product_id));
+CREATE TABLE IF NOT EXISTS addresses (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL,full_name VARCHAR(120),phone VARCHAR(40),address TEXT,city VARCHAR(80),postal_code VARCHAR(30),instructions TEXT);
+CREATE TABLE IF NOT EXISTS orders (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL,total NUMERIC(12,2) NOT NULL,shipping_address TEXT NOT NULL,payment_method VARCHAR(40) DEFAULT 'COD',payment_status VARCHAR(40) DEFAULT 'Pending',status VARCHAR(40) DEFAULT 'Pending',created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS order_items (id BIGSERIAL PRIMARY KEY,order_id BIGINT NOT NULL,product_id BIGINT NOT NULL,quantity INTEGER NOT NULL,price NUMERIC(12,2) NOT NULL,size VARCHAR(30),color VARCHAR(50));
+CREATE TABLE IF NOT EXISTS tryon_history (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL,product_id BIGINT NOT NULL,job_id VARCHAR(255),status VARCHAR(40),result_url TEXT,created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
