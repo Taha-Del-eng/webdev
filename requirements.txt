@@ -1,2 +1,8 @@
-Flask==3.1.0
-pyodbc==5.2.0
+Flask>=3.1,<4
+SQLAlchemy>=2.0,<3
+psycopg[binary]>=3.2,<4
+requests>=2.32,<3
+python-dotenv>=1.0,<2
+cloudinary>=1.44,<2
+Pillow>=11,<12
+gunicorn>=23,<24
