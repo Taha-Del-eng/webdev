@@ -17,6 +17,7 @@ from .services.storage import upload_file
 load_dotenv()
 BASE_DIR=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATABASE_URL=os.getenv("DATABASE_URL","sqlite:///yours_mart.db")
+IS_SQLITE=DATABASE_URL.startswith("sqlite")
 if DATABASE_URL.startswith("postgres://"): DATABASE_URL=DATABASE_URL.replace("postgres://","postgresql+psycopg://",1)
 elif DATABASE_URL.startswith("postgresql://"): DATABASE_URL=DATABASE_URL.replace("postgresql://","postgresql+psycopg://",1)
 engine=create_engine(DATABASE_URL, pool_pre_ping=True, future=True, connect_args={"check_same_thread":False} if DATABASE_URL.startswith("sqlite") else {})
