@@ -126,6 +126,17 @@ def init_db():
         except Exception: pass
         try: c.execute(text("UPDATE orders SET subtotal=total WHERE subtotal IS NULL OR subtotal=0"))
         except Exception: pass
+        su=os.getenv("SUPERADMIN_USERNAME"); sh=os.getenv("SUPERADMIN_PASSWORD_HASH")
+        au=os.getenv("ADMIN_USERNAME"); ah=os.getenv("ADMIN_PASSWORD_HASH")
+        if su and sh and not c.execute(text("SELECT 1 FROM admins WHERE username=:u"),{"u":su}).first():
+            c.execute(text("INSERT INTO admins(username,email,full_name,password_hash,role) VALUES(:u,:e,:n,:p,'superadmin')"),{"u":su,"e":os.getenv("SUPERADMIN_EMAIL",f"{su}@yoursmart.local"),"n":os.getenv("SUPERADMIN_NAME","Yours Mart Superadmin"),"p":sh})
+        if au and ah and not c.execute(text("SELECT 1 FROM admins WHERE username=:u"),{"u":au}).first():
+            c.execute(text("INSERT INTO admins(username,email,full_name,password_hash,role) VALUES(:u,:e,:n,:p,'admin')"),{"u":au,"e":os.getenv("ADMIN_EMAIL",f"{au}@yoursmart.local"),"n":os.getenv("ADMIN_NAME","Yours Mart Admin"),"p":ah})
+        for a in c.execute(text("SELECT id,role FROM admins")).fetchall():
+            perms={"manage_products","manage_orders","manage_inventory","manage_customers","manage_payments","view_reports","manage_settings"} if a[1]=="superadmin" else {"manage_products","manage_orders","manage_inventory","manage_customers","manage_payments","view_reports"}
+            for perm in perms:
+                try:c.execute(text("INSERT INTO admin_permissions(admin_id,permission) VALUES(:a,:p)"),{"a":a[0],"p":perm})
+                except Exception:pass
         count=c.execute(text("SELECT COUNT(*) FROM products")).scalar()
         if not count:
             for name in CATEGORIES: c.execute(text("INSERT INTO categories(name) VALUES(:n) ON CONFLICT DO NOTHING"),{"n":name})
