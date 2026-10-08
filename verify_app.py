@@ -23,7 +23,7 @@ os.environ.pop("AI_API_KEY",None)
 os.environ.pop("AI_ASSISTANT_API_KEY",None)
 
 from app import app
-from app.main import one
+from app.main import one, engine
 app.config.update(TESTING=True)
 
 client=app.test_client()
@@ -129,6 +129,7 @@ assert assistant.status_code==200
 assert all("name" in p and "price" in p and "slug" in p for p in assistant.json["products"])
 
 print("Yours Mart production smoke verification passed.")
+engine.dispose()
 try:
     DB_PATH.unlink()
 except FileNotFoundError:
