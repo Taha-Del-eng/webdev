@@ -8,11 +8,11 @@ Yours Mart is a Flask-based AI fashion marketplace rebuilt from the original Fla
 - Search, category/brand/price/size/rating filters and sorting.
 - Persistent cart and wishlist.
 - Password hashing, secure sessions and CSRF protection.
-- Cash-on-Delivery checkout with stock validation and real orders/order-items.
+- Manual Easypaisa / bank-transfer checkout with stock validation, payment-reference capture, proof upload and real orders/order-items.
 - Customer account, orders and wishlist.
 - Separate customer/admin/superadmin authentication, RBAC permissions, product/category/order management, inventory ledger, payment verification, customer management, audit logs, and sales/customer/stock metrics.
 - Catalog-grounded AI Fashion Assistant with optional LLM enhancement.
-- Real AI Virtual Try-On using FASHN Try-On Max when configured, with an explicit demo/mock fallback.
+- Real AI Virtual Try-On using the configured FASHN provider; when the provider is unavailable or unconfigured, the UI reports the failure instead of fabricating an image.
 - Optional Cloudinary image storage.
 - PostgreSQL production support with SQLite local fallback.
 - Vercel serverless entrypoint and environment-based secrets.
@@ -37,7 +37,7 @@ AI_API_KEY=server-side-key
 
 The API key is never sent to the browser. Customer photos are handled in memory and passed to the configured AI provider for generation. Review provider privacy/retention settings and obtain user consent before production use.
 
-If AI_API_KEY is absent, the flow explicitly reports demo/mock mode instead of pretending a live generation happened.
+If AI_API_KEY is absent, the flow explicitly reports that live AI Try-On is unavailable; no fake/generated placeholder is returned.
 
 ## AI Fashion Assistant
 Optional LLM enhancement uses an OpenAI-compatible chat-completions endpoint:
@@ -64,4 +64,4 @@ The implementation is on feature/yours-mart-ai-marketplace for review before mer
 Never commit .env files, API keys, admin passwords, customer photos or private generated assets. Use HTTPS, strong secrets, PostgreSQL and cloud storage in production.
 
 ## Payment
-COD and manual Easypaisa verification are implemented. Customers can submit a transaction reference plus payment screenshot; admins verify or reject the proof before delivery. The configured account defaults to 03352935407 and is controlled through environment variables. No card number or CVV is collected.
+Only manual Easypaisa / bank transfer is accepted. Customers submit a transaction/reference number plus payment screenshot; orders remain in payment verification until an authorized admin verifies or rejects the proof. The configured account defaults to 03352935407 and is controlled through environment variables. No card number or CVV is collected.
