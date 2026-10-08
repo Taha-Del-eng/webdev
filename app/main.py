@@ -8,6 +8,8 @@ from PIL import Image, UnidentifiedImageError
 from io import BytesIO
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+import cloudinary
+import cloudinary.uploader
 from .services.ai_tryon import generate_virtual_tryon, get_virtual_tryon_status, TryOnError
 from .services.recommendations import recommend
 from .services.storage import upload_file
@@ -633,7 +635,15 @@ def admin_payment(payment_id):
 def admin_payment_proof(payment_id):
     p=one("SELECT proof_path FROM payments WHERE id=:i",{"i":payment_id})
     if not p or not p["proof_path"]:abort(404)
-    path=os.path.abspath(p["proof_path"])
+    stored=p["proof_path"]
+    if stored.startswith("cloudinary:"):
+        try:
+            meta=json.loads(stored.split(":",1)[1])
+            cloudinary.config(cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),api_key=os.getenv("CLOUDINARY_API_KEY"),api_secret=os.getenv("CLOUDINARY_API_SECRET"),secure=True)
+            url=cloudinary.CloudinaryImage(meta["public_id"]).build_url(type="authenticated",sign_url=True,secure=True)
+            return redirect(url)
+        except Exception:abort(404)
+    path=os.path.abspath(stored)
     if not path.startswith(os.path.abspath(private_payment_dir())):abort(403)
     if not os.path.exists(path):abort(404)
     return send_file(path)
@@ -701,6 +711,12 @@ def save_private_payment_proof(file_obj):
         if img.format not in {"JPEG","PNG","WEBP"}:raise ValueError
         img.verify()
     except Exception:abort(400,"Payment proof must be JPG, PNG or WebP.")
+    # Cloudinary authenticated assets are appropriate for production/serverless because they
+    # require signed delivery URLs; local disk remains the development fallback.
+    if all(os.getenv(k) for k in ("CLOUDINARY_CLOUD_NAME","CLOUDINARY_API_KEY","CLOUDINARY_API_SECRET")):
+        cloudinary.config(cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),api_key=os.getenv("CLOUDINARY_API_KEY"),api_secret=os.getenv("CLOUDINARY_API_SECRET"),secure=True)
+        result=cloudinary.uploader.upload(BytesIO(raw),folder="yours-mart/payment-proofs",type="authenticated",resource_type="image")
+        return "cloudinary:"+json.dumps({"public_id":result["public_id"],"format":result.get("format","jpg")})
     path=os.path.join(private_payment_dir(),f"{uuid.uuid4().hex}.img")
     with open(path,"wb") as fh:fh.write(raw)
     return path
