@@ -1,4 +1,4 @@
-import os, json, math, re, secrets
+import os, json, math, re, secrets, uuid
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort, flash
@@ -97,6 +97,15 @@ def init_db():
     """CREATE TABLE IF NOT EXISTS tryon_history(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, job_id VARCHAR(255), status VARCHAR(40), result_url TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS categories_meta(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name VARCHAR(120) UNIQUE NOT NULL)"""
     ]
+
+    ddl.extend([
+    """CREATE TABLE IF NOT EXISTS admins(id INTEGER PRIMARY KEY, username VARCHAR(80) UNIQUE NOT NULL, email VARCHAR(180) UNIQUE NOT NULL, full_name VARCHAR(120) NOT NULL, password_hash VARCHAR(255) NOT NULL, role VARCHAR(20) NOT NULL DEFAULT 'admin', is_active INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS admin_permissions(id INTEGER PRIMARY KEY, admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE, permission VARCHAR(80) NOT NULL, UNIQUE(admin_id,permission))""",
+    """CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY, order_id INTEGER UNIQUE NOT NULL REFERENCES orders(id) ON DELETE CASCADE, method VARCHAR(40) NOT NULL, amount NUMERIC(12,2) NOT NULL, transaction_ref VARCHAR(120), proof_path TEXT, status VARCHAR(40) NOT NULL DEFAULT 'Pending Verification', rejection_reason TEXT, verified_by INTEGER REFERENCES admins(id) ON DELETE SET NULL, verified_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS inventory_transactions(id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL, change_qty INTEGER NOT NULL, stock_after INTEGER NOT NULL, reason VARCHAR(160), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS reviews(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL, rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5), body TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id,product_id,order_id))""",
+    """CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY, admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL, action VARCHAR(120) NOT NULL, target_type VARCHAR(60), target_id VARCHAR(80), details TEXT, ip_address VARCHAR(80), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    ])
     with engine.begin() as c:
         for q in ddl:
             try: c.execute(text(q))
@@ -104,6 +113,19 @@ def init_db():
                 if "GENERATED ALWAYS AS IDENTITY" in q:
                     c.execute(text(q.replace("INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY","INTEGER PRIMARY KEY AUTOINCREMENT")))
                 else: raise
+        migrations = [
+            ("users","role","VARCHAR(20) DEFAULT 'customer'"),("users","is_active","INTEGER DEFAULT 1"),("users","updated_at","TIMESTAMP"),
+            ("products","min_stock","INTEGER DEFAULT 5"),("products","status","VARCHAR(20) DEFAULT 'active'"),("products","featured","INTEGER DEFAULT 0"),
+            ("orders","order_number","VARCHAR(40)"),("orders","subtotal","NUMERIC(12,2) DEFAULT 0"),("orders","discount","NUMERIC(12,2) DEFAULT 0"),("orders","shipping_fee","NUMERIC(12,2) DEFAULT 0"),("orders","updated_at","TIMESTAMP"),
+            ("addresses","province","VARCHAR(80)"),("addresses","area","VARCHAR(120)"),("addresses","is_default","INTEGER DEFAULT 0"),
+        ]
+        for table,col,typ in migrations:
+            try: c.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {typ}"))
+            except Exception: pass
+        try: c.execute(text("UPDATE orders SET order_number='YM-' || printf('%06d',id) WHERE order_number IS NULL OR order_number=''"))
+        except Exception: pass
+        try: c.execute(text("UPDATE orders SET subtotal=total WHERE subtotal IS NULL OR subtotal=0"))
+        except Exception: pass
         count=c.execute(text("SELECT COUNT(*) FROM products")).scalar()
         if not count:
             for name in CATEGORIES: c.execute(text("INSERT INTO categories(name) VALUES(:n) ON CONFLICT DO NOTHING"),{"n":name})
@@ -174,12 +196,32 @@ def login_required(f):
         return f(*a,**k)
     return w
 
-def admin_required(f):
-    @wraps(f)
-    def w(*a,**k):
-        if not session.get("admin"): return redirect(url_for("admin_login"))
-        return f(*a,**k)
-    return w
+def admin_required(permission=None, superadmin=False):
+    def deco(f):
+        @wraps(f)
+        def w(*a,**k):
+            aid=session.get("admin_id")
+            if not aid:return redirect(url_for("admin_login"))
+            arow=one("SELECT * FROM admins WHERE id=:i AND is_active=1",{"i":aid})
+            if not arow:
+                session.clear()
+                return redirect(url_for("admin_login"))
+            if superadmin and arow["role"]!="superadmin":abort(403)
+            if permission and arow["role"]!="superadmin":
+                ok=one("SELECT id FROM admin_permissions WHERE admin_id=:a AND permission=:p",{"a":aid,"p":permission})
+                if not ok:abort(403)
+            return f(*a,**k)
+        return w
+    return deco
+
+def admin_audit(action,target_type=None,target_id=None,details=""):
+    aid=session.get("admin_id")
+    if not aid:return
+    try:
+        with engine.begin() as c:
+            c.execute(text("INSERT INTO audit_logs(admin_id,action,target_type,target_id,details,ip_address) VALUES(:a,:x,:t,:i,:d,:ip)"),
+                      {"a":aid,"x":action,"t":target_type,"i":str(target_id) if target_id is not None else None,"d":details[:1000],"ip":request.headers.get("X-Forwarded-For",request.remote_addr)})
+    except Exception:pass
 
 def product_dict(p):
     if not p:return None
@@ -271,10 +313,19 @@ def logout():
 @app.route("/admin-login",methods=["GET","POST"])
 def admin_login():
     if request.method=="POST":
-        if request.form.get("username")==os.getenv("ADMIN_USERNAME") and os.getenv("ADMIN_PASSWORD_HASH") and check_password_hash(os.getenv("ADMIN_PASSWORD_HASH"),request.form.get("password","")):
-            session.clear(); session["admin"]=True; return redirect(url_for("admin"))
+        login_name=request.form.get("username","").strip()
+        a=one("SELECT * FROM admins WHERE (username=:u OR email=:u) AND is_active=1",{"u":login_name})
+        if a and check_password_hash(a["password_hash"],request.form.get("password","")):
+            session.clear();session["admin_id"]=a["id"];session["admin_role"]=a["role"];session["csrf"]=secrets.token_urlsafe(24)
+            return redirect(url_for("admin"))
         return render_template("auth.html",mode="admin",error="Invalid admin credentials.")
     return render_template("auth.html",mode="admin")
+
+@app.post("/admin-logout")
+@admin_required()
+def admin_logout():
+    session.clear()
+    return redirect(url_for("home"))
 
 @app.get("/wishlist")
 @login_required
@@ -335,28 +386,42 @@ def remove_cart(item_id):
 @app.route("/checkout",methods=["GET","POST"])
 @login_required
 def checkout():
-    items=rows("SELECT c.*,p.name,p.price,p.stock FROM cart_items c JOIN products p ON p.id=c.product_id WHERE c.user_id=:u",{"u":session["user_id"]})
+    items=rows("SELECT c.*,p.name,p.price,p.stock,p.status,p.image_url FROM cart_items c JOIN products p ON p.id=c.product_id WHERE c.user_id=:u",{"u":session["user_id"]})
     if not items:return redirect(url_for("cart"))
-    subtotal=sum(float(i["price"])*i["quantity"] for i in items); shipping=0 if subtotal>=5000 else 250; total=subtotal+shipping
+    subtotal=sum(float(i["price"])*int(i["quantity"]) for i in items)
+    shipping=0 if subtotal>=5000 else 250
+    total=subtotal+shipping
+    account=os.getenv("PAYMENT_ACCOUNT","03352935407");account_name=os.getenv("PAYMENT_ACCOUNT_NAME","Yours Mart")
     if request.method=="POST":
-        fields={k:request.form.get(k,"").strip() for k in ("full_name","phone","address","city","postal_code","instructions")}
-        if not all(fields[k] for k in ("full_name","phone","address","city","postal_code")):
-            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,shipping=shipping,error="Please complete all required delivery fields.")
-        if any(len(fields[k])>500 for k in ("address","instructions")) or len(fields["full_name"])>120 or len(fields["city"])>80 or len(fields["postal_code"])>30 or len(fields["phone"])>40:
-            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,shipping=shipping,error="One or more delivery fields are too long.")
+        fields={k:request.form.get(k,"").strip() for k in ("full_name","phone","province","area","address","city","postal_code","instructions")}
+        if not all(fields[k] for k in ("full_name","phone","province","area","address","city")):
+            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="Please complete all required delivery details.",payment_account=account,payment_account_name=account_name)
+        method=request.form.get("payment_method","").strip().lower()
+        if method not in {"cod","easypaisa"}:abort(400,"Unsupported payment method.")
+        proof=request.files.get("payment_proof");txref=request.form.get("transaction_ref","").strip()
+        if method=="easypaisa" and (not proof or not proof.filename or not txref):
+            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="Easypaisa requires the transaction/reference number and payment screenshot.",payment_account=account,payment_account_name=account_name)
+        if len(txref)>120:abort(400,"Transaction reference is too long.")
+        for i in items:
+            if i["status"]!="active" or int(i["stock"])<int(i["quantity"]):
+                return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error=f"{i['name']} is no longer available in the requested quantity.",payment_account=account,payment_account_name=account_name)
+        proof_path=save_private_payment_proof(proof) if method=="easypaisa" else None
+        payment_status="Pending Verification" if method=="easypaisa" else "Pending"
+        order_status="Payment Verification" if method=="easypaisa" else "Confirmed"
         with engine.begin() as c:
-            for i in items:
-                updated=c.execute(text("UPDATE products SET stock=stock-:q,updated_at=CURRENT_TIMESTAMP WHERE id=:p AND stock>=:q RETURNING id"),{"q":i["quantity"],"p":i["product_id"]})
-                if not updated.first():
-                    abort(409,f"Not enough stock for {i['name']}.")
-            r=c.execute(text("INSERT INTO orders(user_id,total,shipping_address,payment_method,payment_status,status) VALUES(:u,:t,:a,'COD','Pending','Pending') RETURNING id"),{"u":session["user_id"],"t=total,"a":json.dumps(fields)})
+            order_number=f"YM-{secrets.token_hex(4).upper()}"
+            r=c.execute(text("""INSERT INTO orders(order_number,user_id,subtotal,discount,shipping_fee,total,shipping_address,payment_method,payment_status,status)
+                VALUES(:n,:u,:sub,0,:sf,:t,:addr,:m,:ps,:st) RETURNING id"""),{"n":order_number,"u":session["user_id"],"sub":subtotal,"sf":shipping,"t":total,"addr":json.dumps(fields),"m":"Easypaisa" if method=="easypaisa" else "COD","ps":payment_status,"st":order_status})
             oid=r.scalar_one()
-            c.execute(text("INSERT INTO addresses(user_id,full_name,phone,address,city,postal_code,instructions) VALUES(:u,:n,:ph,:a,:c,:pc,:i)"),{"u":session["user_id"],"n":fields["full_name"],"ph":fields["phone"],"a":fields["address"],"c":fields["city"],"pc":fields["postal_code"],"i":fields["instructions"]})
             for i in items:
+                upd=c.execute(text("UPDATE products SET stock=stock-:q,updated_at=CURRENT_TIMESTAMP WHERE id=:p AND status='active' AND stock>=:q"),{"q":i["quantity"],"p":i["product_id"]})
+                if upd.rowcount!=1:raise RuntimeError(f"Stock changed for {i['name']}. Please retry.")
                 c.execute(text("INSERT INTO order_items(order_id,product_id,quantity,price,size,color) VALUES(:o,:p,:q,:pr,:s,:c)"),{"o":oid,"p":i["product_id"],"q":i["quantity"],"pr":i["price"],"s":i.get("size"),"c":i.get("color")})
+            c.execute(text("INSERT INTO addresses(user_id,full_name,phone,province,area,address,city,postal_code,instructions,is_default) VALUES(:u,:n,:ph,:pv,:ar,:a,:c,:pc,:i,0)"),{"u":session["user_id"],"n":fields["full_name"],"ph":fields["phone"],"pv":fields["province"],"ar":fields["area"],"a":fields["address"],"c":fields["city"],"pc":fields["postal_code"],"i":fields["instructions"]})
+            c.execute(text("INSERT INTO payments(order_id,method,amount,transaction_ref,proof_path,status) VALUES(:o,:m,:a,:r,:p,:s)"),{"o":oid,"m":"Easypaisa" if method=="easypaisa" else "COD","a":total,"r":txref or None,"p":proof_path,"s":payment_status})
             c.execute(text("DELETE FROM cart_items WHERE user_id=:u"),{"u":session["user_id"]})
-        return render_template("checkout.html",items=[],total=0,subtotal=0,shipping=0,success=f"Order #{oid} placed successfully. Cash on Delivery selected.")
-    return render_template("checkout.html",items=items,total=total,subtotal=subtotal,shipping=shipping)
+        return redirect(url_for("order_detail",oid=oid))
+    return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,payment_account=account,payment_account_name=account_name)
 
 @app.get("/account")
 @login_required
@@ -371,9 +436,22 @@ def account():
 @login_required
 def order_detail(oid):
     o=one("SELECT * FROM orders WHERE id=:o AND user_id=:u",{"o":oid,"u":session["user_id"]})
-    if not o: abort(404)
+    if not o:abort(404)
     o["items"]=rows("SELECT oi.*,p.name,p.image_url FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=:o",{"o":oid})
-    return render_template("account.html",tab="orders",products=[],orders=[o],user=one("SELECT * FROM users WHERE id=:u",{"u":session["user_id"]}))
+    payment=one("SELECT id,method,amount,transaction_ref,status,rejection_reason,created_at FROM payments WHERE order_id=:o",{"o":oid})
+    return render_template("order_detail.html",order=o,payment=payment)
+
+@app.post("/orders/<int:oid>/cancel")
+@login_required
+def cancel_order(oid):
+    o=one("SELECT * FROM orders WHERE id=:o AND user_id=:u",{"o":oid,"u":session["user_id"]})
+    if not o:abort(404)
+    if o["status"] not in {"Pending Payment","Payment Verification","Confirmed"}:abort(400,"This order can no longer be cancelled online.")
+    with engine.begin() as c:
+        c.execute(text("UPDATE orders SET status='Cancelled',updated_at=CURRENT_TIMESTAMP WHERE id=:o"),{"o":oid})
+        items=c.execute(text("SELECT product_id,quantity FROM order_items WHERE order_id=:o"),{"o":oid}).fetchall()
+        for i in items:c.execute(text("UPDATE products SET stock=stock+:q,updated_at=CURRENT_TIMESTAMP WHERE id=:p"),{"q":i[1],"p":i[0]})
+    return redirect(url_for("order_detail",oid=oid))
 
 @app.get("/try-on/<slug>")
 @login_required
@@ -461,82 +539,159 @@ def assistant():
             pass
     return jsonify(reply=f"I found {len(matches)} catalog matches. I’d start with {matches[0]['name']} and build around its {matches[0]['colors'][0] if matches[0]['colors'] else 'neutral'} palette. {('The first three total about Rs. '+format(total,',.0f')+'.') if matches else ''}",products=matches[:6])
 
+ADMIN_PERMISSIONS={"manage_products","manage_orders","manage_inventory","manage_customers","manage_payments","view_reports","manage_settings"}
+
 @app.get("/admin")
-@admin_required
+@admin_required()
 def admin():
-    stats={
-      "sales":float(one("SELECT COALESCE(SUM(total),0) n FROM orders WHERE status!='Cancelled'")["n"]),
-      "orders":int(one("SELECT COUNT(*) n FROM orders")["n"]),
-      "customers":int(one("SELECT COUNT(*) n FROM users")["n"]),
-      "products":int(one("SELECT COUNT(*) n FROM products")["n"]),
-      "low":int(one("SELECT COUNT(*) n FROM products WHERE stock<=5")["n"]),
-      "pending":int(one("SELECT COUNT(*) n FROM orders WHERE status IN ('Pending','Confirmed')")["n"])
-    }
-    orders=rows("SELECT o.*,u.full_name,u.email FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at DESC LIMIT 20")
-    products=product_query(limit=100)
-    cats=rows("SELECT * FROM categories ORDER BY name")
+    stats={"sales":float(one("SELECT COALESCE(SUM(total),0) n FROM orders WHERE status NOT IN ('Cancelled','Refunded') AND (payment_method='COD' OR payment_status IN ('Verified','Paid'))")["n"]),
+           "orders":int(one("SELECT COUNT(*) n FROM orders")["n"]),"pending":int(one("SELECT COUNT(*) n FROM orders WHERE status IN ('Pending Payment','Payment Verification','Confirmed','Processing','Packed')")["n"]),
+           "shipped":int(one("SELECT COUNT(*) n FROM orders WHERE status IN ('Shipped','Out for Delivery')")["n"]),"delivered":int(one("SELECT COUNT(*) n FROM orders WHERE status='Delivered'")["n"]),
+           "customers":int(one("SELECT COUNT(*) n FROM users WHERE role='customer'")["n"]),"products":int(one("SELECT COUNT(*) n FROM products WHERE status!='archived'")["n"]),
+           "low":int(one("SELECT COUNT(*) n FROM products WHERE stock<=min_stock AND status='active'")["n"]),"out":int(one("SELECT COUNT(*) n FROM products WHERE stock=0 AND status='active'")["n"])}
+    orders=rows("SELECT o.*,u.full_name,u.email FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at DESC LIMIT 30")
+    products=product_query("WHERE p.status!='archived'",limit=100);cats=rows("SELECT * FROM categories ORDER BY name")
+    payments=rows("SELECT p.*,o.order_number,u.full_name FROM payments p JOIN orders o ON o.id=p.order_id JOIN users u ON u.id=o.user_id ORDER BY p.created_at DESC LIMIT 30")
     chart_status=rows("SELECT status,COUNT(*) n FROM orders GROUP BY status")
-    chart_categories=rows("SELECT category,SUM(oi.quantity*oi.price) sales FROM order_items oi JOIN products p ON p.id=oi.product_id GROUP BY category ORDER BY sales DESC LIMIT 8")
-    return render_template("admin.html",stats=stats,orders=orders,products=products,categories=cats,chart_status=chart_status,chart_categories=chart_categories)
+    chart_categories=rows("SELECT p.category,SUM(oi.quantity*oi.price) sales FROM order_items oi JOIN products p ON p.id=oi.product_id GROUP BY p.category ORDER BY sales DESC LIMIT 8")
+    return render_template("admin.html",stats=stats,orders=orders,products=products,categories=cats,payments=payments,chart_status=chart_status,chart_categories=chart_categories,admin_role=session.get("admin_role"))
 
 @app.post("/admin/product")
-@admin_required
+@admin_required("manage_products")
 def admin_product():
-    f=request.form
-    pid=f.get("id"); name=f.get("name","").strip(); brand=f.get("brand","").strip(); cat=f.get("category","").strip()
-    price=parse_money(f.get("price",0)); orig=parse_money(f.get("original_price",price)); stock=parse_int(f.get("stock",0),0,0,1000000)
-    sizes=f.get("sizes","S,M,L,XL").strip() or "One Size"; colors=f.get("colors","Black").strip() or "Black"; tags=f.get("tags","casual").strip() or "casual"; image=f.get("image_url","").strip()
-    if not name or len(name)>180 or len(brand)>120 or len(cat)>120: abort(400,"Invalid product details.")
-    if price<=0 or orig<price: abort(400,"Original price must be greater than or equal to sale price.")
-    if not image and request.files.get("image") and request.files["image"].filename:
-        upload=request.files["image"]
-        raw=upload.read()
-        try:
-            img=Image.open(BytesIO(raw))
-            img.verify()
-            if len(raw)>8*1024*1024: raise ValueError("image too large")
-            image=upload_file(BytesIO(raw))
-        except (UnidentifiedImageError,OSError,ValueError,RuntimeError):
-            abort(400,"Invalid product image.")
+    f=request.form;pid=f.get("id");name=f.get("name","").strip();brand=f.get("brand","").strip();cat=f.get("category","").strip()
+    price=parse_money(f.get("price"));orig=parse_money(f.get("original_price",price));stock=parse_int(f.get("stock"),0,0,1000000);min_stock=parse_int(f.get("min_stock"),5,0,100000)
+    status=f.get("status","active");featured=1 if f.get("featured") else 0
+    sizes=f.get("sizes","One Size").strip() or "One Size";colors=f.get("colors","Black").strip() or "Black";tags=f.get("tags","casual").strip() or "casual";image=f.get("image_url","").strip()
+    if status not in {"active","draft","archived"} or not name or len(name)>180 or len(brand)>120 or len(cat)>120 or price<=0 or orig<price:abort(400,"Invalid product details.")
     if not image:image="https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=900&q=85"
-    parsed=urlparse(image)
-    if parsed.scheme not in {"http","https"}: abort(400,"Product image must use an HTTP(S) URL.")
+    if urlparse(image).scheme not in {"http","https"}:abort(400,"Product image must use HTTP(S).")
     slug=re.sub(r"[^a-z0-9]+","-",name.lower()).strip("-") or f"product-{secrets.token_hex(4)}"
     existing=one("SELECT id FROM products WHERE slug=:s",{"s":slug})
-    if existing and (not pid or int(existing["id"])!=int(pid)):
-        slug=f"{slug}-{secrets.token_hex(3)}"
-    data={"name":name,"brand":brand,"cat":cat,"price":price,"orig":orig,"disc":round((1-price/orig)*100,1) if orig else 0,"stock":stock,"sizes":sizes,"colors":colors,"tags":tags,"image":image,"slug":slug,"desc":f"{name} by {brand}."}
+    if existing and (not pid or int(existing["id"])!=int(pid)):slug=f"{slug}-{secrets.token_hex(3)}"
+    data={"name":name,"brand":brand,"cat":cat,"price":price,"orig":orig,"disc":round((1-price/orig)*100,1),"stock":stock,"min_stock":min_stock,"sizes":sizes,"colors":colors,"tags":tags,"image":image,"slug":slug,"status":status,"featured":featured,"desc":f"{name} by {brand}."}
     with engine.begin() as c:
-        if pid:c.execute(text("""UPDATE products SET name=:name,slug=:slug,brand=:brand,category=:cat,description=:desc,price=:price,original_price=:orig,discount=:disc,stock=:stock,sizes=:sizes,colors=:colors,tags=:tags,image_url=:image,updated_at=CURRENT_TIMESTAMP WHERE id=:id"""),{**data,"id":int(pid)})
-        else:c.execute(text("""INSERT INTO products(name,slug,brand,category,description,price,original_price,discount,stock,sizes,colors,tags,image_url) VALUES(:name,:slug,:brand,:cat,:desc,:price,:orig,:disc,:stock,:sizes,:colors,:tags,:image)"""),data)
-    return redirect(url_for("admin"))
+        if pid:c.execute(text("""UPDATE products SET name=:name,slug=:slug,brand=:brand,category=:cat,description=:desc,price=:price,original_price=:orig,discount=:disc,stock=:stock,min_stock=:min_stock,sizes=:sizes,colors=:colors,tags=:tags,image_url=:image,status=:status,featured=:featured,updated_at=CURRENT_TIMESTAMP WHERE id=:id"""),{**data,"id":int(pid)})
+        else:c.execute(text("""INSERT INTO products(name,slug,brand,category,description,price,original_price,discount,stock,min_stock,sizes,colors,tags,image_url,status,featured) VALUES(:name,:slug,:brand,:cat,:desc,:price,:orig,:disc,:stock,:min_stock,:sizes,:colors,:tags,:image,:status,:featured)"""),data)
+    admin_audit("product_saved","product",pid or "new",name);return redirect(url_for("admin"))
 
-@app.post("/admin/product/delete/<int:pid>")
-@admin_required
-def admin_product_delete(pid):
-    refs=one("SELECT (SELECT COUNT(*) FROM order_items WHERE product_id=:p) orders,(SELECT COUNT(*) FROM cart_items WHERE product_id=:p) carts,(SELECT COUNT(*) FROM wishlist WHERE product_id=:p) wishes",{"p":pid})
-    if not refs: abort(404)
-    if int(refs["orders"]) or int(refs["carts"]) or int(refs["wishes"]):
-        flash("This product cannot be deleted because it is referenced by an order, cart, or wishlist. Set stock to 0 instead.")
-        return redirect(url_for("admin"))
-    with engine.begin() as c:c.execute(text("DELETE FROM products WHERE id=:p"),{"p":pid})
-    return redirect(url_for("admin"))
+@app.post("/admin/product/archive/<int:pid>")
+@admin_required("manage_products")
+def admin_product_archive(pid):
+    if not one("SELECT id FROM products WHERE id=:p",{"p":pid}):abort(404)
+    exec_sql("UPDATE products SET status='archived',stock=0,updated_at=CURRENT_TIMESTAMP WHERE id=:p",{"p":pid});admin_audit("product_archived","product",pid);return redirect(url_for("admin"))
+
+@app.post("/admin/inventory/<int:pid>")
+@admin_required("manage_inventory")
+def admin_inventory(pid):
+    change=parse_int(request.form.get("change"),0,-1000000,1000000);reason=request.form.get("reason","Manual adjustment").strip()[:160]
+    p=one("SELECT stock FROM products WHERE id=:p",{"p":pid})
+    if not p or change==0:abort(400)
+    new=max(0,int(p["stock"])+change)
+    with engine.begin() as c:
+        c.execute(text("UPDATE products SET stock=:s,updated_at=CURRENT_TIMESTAMP WHERE id=:p"),{"s":new,"p":pid})
+        c.execute(text("INSERT INTO inventory_transactions(product_id,admin_id,change_qty,stock_after,reason) VALUES(:p,:a,:q,:s,:r)"),{"p":pid,"a":session["admin_id"],"q":change,"s":new,"r":reason})
+    admin_audit("inventory_adjusted","product",pid,f"{change:+d} => {new}");return redirect(url_for("admin"))
 
 @app.post("/admin/order/<int:oid>")
-@admin_required
+@admin_required("manage_orders")
 def admin_order(oid):
-    status=request.form.get("status","Pending")
-    if status not in {"Pending","Confirmed","Processing","Shipped","Delivered","Cancelled"}:abort(400)
-    with engine.begin() as c:c.execute(text("UPDATE orders SET status=:s,payment_status=:ps WHERE id=:o"),{"s":status,"ps":"Paid" if status=="Delivered" else "Pending","o":oid})
-    return redirect(url_for("admin"))
+    status=request.form.get("status","").strip()
+    allowed={"Pending Payment","Payment Verification","Confirmed","Processing","Packed","Shipped","Out for Delivery","Delivered","Cancelled","Returned","Refunded"}
+    if status not in allowed:abort(400)
+    o=one("SELECT * FROM orders WHERE id=:o",{"o":oid})
+    if not o:abort(404)
+    if status=="Delivered" and o["payment_method"]=="Easypaisa" and o["payment_status"]!="Verified":abort(400,"Payment must be verified before delivery.")
+    exec_sql("UPDATE orders SET status=:s,updated_at=CURRENT_TIMESTAMP WHERE id=:o",{"s":status,"o":oid});admin_audit("order_status_changed","order",oid,status);return redirect(url_for("admin"))
 
-@app.post("/admin/category")
-@admin_required
-def admin_category():
-    name=request.form.get("name","").strip()
-    if name:
-        with engine.begin() as c:c.execute(text("INSERT INTO categories(name) VALUES(:n) ON CONFLICT DO NOTHING"),{"n":name})
-    return redirect(url_for("admin"))
+@app.post("/admin/payment/<int:payment_id>")
+@admin_required("manage_payments")
+def admin_payment(payment_id):
+    status=request.form.get("status","").strip();reason=request.form.get("reason","").strip()[:500]
+    if status not in {"Verified","Rejected"}:abort(400)
+    p=one("SELECT * FROM payments WHERE id=:i",{"i":payment_id})
+    if not p:abort(404)
+    with engine.begin() as c:
+        c.execute(text("UPDATE payments SET status=:s,rejection_reason=:r,verified_by=:v,verified_at=CURRENT_TIMESTAMP WHERE id=:i"),{"s":status,"r":reason or None,"v":session["admin_id"],"i":payment_id})
+        c.execute(text("UPDATE orders SET payment_status=:ps,status=:os,updated_at=CURRENT_TIMESTAMP WHERE id=:o"),{"ps":status,"os":"Confirmed" if status=="Verified" else "Payment Verification","o":p["order_id"]})
+    admin_audit("payment_reviewed","payment",payment_id,status);return redirect(url_for("admin"))
+
+@app.get("/admin/payment-proof/<int:payment_id>")
+@admin_required("manage_payments")
+def admin_payment_proof(payment_id):
+    p=one("SELECT proof_path FROM payments WHERE id=:i",{"i":payment_id})
+    if not p or not p["proof_path"]:abort(404)
+    path=os.path.abspath(p["proof_path"])
+    if not path.startswith(os.path.abspath(private_payment_dir())):abort(403)
+    if not os.path.exists(path):abort(404)
+    return send_file(path)
+
+@app.get("/admin/customers")
+@admin_required("manage_customers")
+def admin_customers():
+    users=rows("SELECT id,full_name,email,username,is_active,created_at FROM users WHERE role='customer' ORDER BY created_at DESC")
+    return render_template("admin_customers.html",users=users)
+
+@app.post("/admin/customer/<int:uid>/toggle")
+@admin_required("manage_customers")
+def admin_customer_toggle(uid):
+    u=one("SELECT * FROM users WHERE id=:u AND role='customer'",{"u":uid})
+    if not u:abort(404)
+    exec_sql("UPDATE users SET is_active=:a,updated_at=CURRENT_TIMESTAMP WHERE id=:u",{"a":0 if u["is_active"] else 1,"u":uid});admin_audit("customer_status_changed","user",uid);return redirect(url_for("admin_customers"))
+
+@app.get("/superadmin")
+@admin_required(superadmin=True)
+def superadmin():
+    admins=rows("SELECT id,username,email,full_name,role,is_active,created_at FROM admins ORDER BY created_at DESC")
+    logs=rows("SELECT l.*,a.username FROM audit_logs l LEFT JOIN admins a ON a.id=l.admin_id ORDER BY l.created_at DESC LIMIT 50")
+    return render_template("superadmin.html",admins=admins,logs=logs,permissions=sorted(ADMIN_PERMISSIONS))
+
+@app.post("/superadmin/admin")
+@admin_required(superadmin=True)
+def superadmin_create_admin():
+    username=request.form.get("username","").strip();email=request.form.get("email","").strip().lower();name=request.form.get("full_name","").strip();pwd=request.form.get("password","");role=request.form.get("role","admin")
+    if role not in {"admin","superadmin"} or not re.fullmatch(r"[A-Za-z0-9_.-]{3,80}",username) or not valid_email(email) or len(pwd)<12:abort(400,"Use valid account details and a password of at least 12 characters.")
+    try:
+        with engine.begin() as c:
+            c.execute(text("INSERT INTO admins(username,email,full_name,password_hash,role) VALUES(:u,:e,:n,:p,:r)"),{"u":username,"e":email,"n":name[:120],"p":generate_password_hash(pwd),"r":role})
+            aid=c.execute(text("SELECT id FROM admins WHERE username=:u"),{"u":username}).scalar()
+            for perm in ADMIN_PERMISSIONS:c.execute(text("INSERT INTO admin_permissions(admin_id,permission) VALUES(:a,:p)"),{"a":aid,"p":perm})
+    except Exception:abort(400,"Username or email is already in use.")
+    admin_audit("admin_created","admin",aid,username);return redirect(url_for("superadmin"))
+
+@app.post("/superadmin/admin/<int:aid>/toggle")
+@admin_required(superadmin=True)
+def superadmin_toggle(aid):
+    if aid==session["admin_id"]:abort(400,"You cannot disable your own account.")
+    a=one("SELECT * FROM admins WHERE id=:a",{"a":aid})
+    if not a:abort(404)
+    exec_sql("UPDATE admins SET is_active=:v,updated_at=CURRENT_TIMESTAMP WHERE id=:a",{"v":0 if a["is_active"] else 1,"a":aid});admin_audit("admin_status_changed","admin",aid);return redirect(url_for("superadmin"))
+
+@app.post("/superadmin/admin/<int:aid>/permissions")
+@admin_required(superadmin=True)
+def superadmin_permissions(aid):
+    if not one("SELECT id FROM admins WHERE id=:a",{"a":aid}):abort(404)
+    selected=set(request.form.getlist("permissions"))
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM admin_permissions WHERE admin_id=:a"),{"a":aid})
+        for perm in selected & ADMIN_PERMISSIONS:c.execute(text("INSERT INTO admin_permissions(admin_id,permission) VALUES(:a,:p)"),{"a":aid,"p":perm})
+    admin_audit("admin_permissions_updated","admin",aid,",".join(sorted(selected)));return redirect(url_for("superadmin"))
+def private_payment_dir():
+    path=os.path.join(BASE_DIR,"instance","private_payments")
+    os.makedirs(path,exist_ok=True)
+    return path
+
+def save_private_payment_proof(file_obj):
+    raw=file_obj.read()
+    if not raw or len(raw)>8*1024*1024:abort(400,"Payment proof must be a valid image under 8MB.")
+    try:
+        img=Image.open(BytesIO(raw))
+        if img.format not in {"JPEG","PNG","WEBP"}:raise ValueError
+        img.verify()
+    except Exception:abort(400,"Payment proof must be JPG, PNG or WebP.")
+    path=os.path.join(private_payment_dir(),f"{uuid.uuid4().hex}.img")
+    with open(path,"wb") as fh:fh.write(raw)
+    return path
 
 @app.get("/health")
 def health():
