@@ -253,10 +253,10 @@ def product_query(where="",params={},order="p.created_at DESC",limit=None,offset
 
 @app.get("/")
 def home():
-    trending=product_query(order="p.rating DESC, p.review_count DESC",limit=4)
-    new_arrivals=product_query(order="p.created_at DESC",limit=4)
-    best_sellers=product_query(order="p.review_count DESC, p.rating DESC",limit=4)
-    recommended=product_query(order="p.rating DESC, p.created_at DESC",limit=4)
+    trending=product_query("WHERE p.status='active'",order="p.rating DESC, p.review_count DESC",limit=4)
+    new_arrivals=product_query("WHERE p.status='active'",order="p.created_at DESC",limit=4)
+    best_sellers=product_query("WHERE p.status='active'",order="p.review_count DESC, p.rating DESC",limit=4)
+    recommended=product_query("WHERE p.status='active'",order="p.rating DESC, p.created_at DESC",limit=4)
     return render_template("landing.html",trending=trending,new_arrivals=new_arrivals,best_sellers=best_sellers,categories=rows("SELECT * FROM categories ORDER BY name"),recommended=recommended)
 
 @app.get("/shop")
@@ -269,7 +269,7 @@ def shop():
     except ValueError: min_value=None; minp=""
     try: max_value=float(maxp) if maxp else None
     except ValueError: max_value=None; maxp=""
-    cond=[]; par={}
+    cond=["p.status='active'"]; par={}
     if q: cond.append("(LOWER(p.name) LIKE LOWER(:q) OR LOWER(p.brand) LIKE LOWER(:q) OR LOWER(p.category) LIKE LOWER(:q) OR LOWER(p.description) LIKE LOWER(:q) OR LOWER(p.tags) LIKE LOWER(:q) OR LOWER(p.colors) LIKE LOWER(:q))"); par["q"]=f"%{q}%"
     if cat: cond.append("p.category=:cat"); par["cat"]=cat
     if brand: cond.append("p.brand=:brand"); par["brand"]=brand
