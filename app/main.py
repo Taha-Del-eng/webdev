@@ -2,7 +2,7 @@ import os, json, math, re, secrets
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort, flash
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event
 from werkzeug.security import generate_password_hash, check_password_hash
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
@@ -18,6 +18,12 @@ DATABASE_URL=os.getenv("DATABASE_URL","sqlite:///yours_mart.db")
 if DATABASE_URL.startswith("postgres://"): DATABASE_URL=DATABASE_URL.replace("postgres://","postgresql+psycopg://",1)
 elif DATABASE_URL.startswith("postgresql://"): DATABASE_URL=DATABASE_URL.replace("postgresql://","postgresql+psycopg://",1)
 engine=create_engine(DATABASE_URL, pool_pre_ping=True, future=True, connect_args={"check_same_thread":False} if DATABASE_URL.startswith("sqlite") else {})
+if DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine,"connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):
+        cursor=dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 app=Flask(__name__, template_folder=os.path.join(BASE_DIR,"templates"), static_folder=os.path.join(BASE_DIR,"static"))
 secret_key=os.getenv("SECRET_KEY")
 if not secret_key and (os.getenv("VERCEL")=="1" or os.getenv("FLASK_ENV")=="production"):
@@ -82,13 +88,13 @@ def init_db():
     ddl=[
     """CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, full_name VARCHAR(120) NOT NULL, email VARCHAR(180) UNIQUE NOT NULL, username VARCHAR(80) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name VARCHAR(120) UNIQUE NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
-    """CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name VARCHAR(180) NOT NULL, slug VARCHAR(220) UNIQUE NOT NULL, brand VARCHAR(120), category VARCHAR(120) NOT NULL, description TEXT, price NUMERIC(12,2) NOT NULL, original_price NUMERIC(12,2), discount NUMERIC(5,2) DEFAULT 0, stock INTEGER DEFAULT 0, sizes TEXT, colors TEXT, rating NUMERIC(3,2) DEFAULT 0, review_count INTEGER DEFAULT 0, tags TEXT, image_url TEXT NOT NULL, additional_images TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
-    """CREATE TABLE IF NOT EXISTS cart_items(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL, product_id INTEGER NOT NULL, quantity INTEGER NOT NULL, size VARCHAR(30), color VARCHAR(50), UNIQUE(user_id,product_id,size,color))""",
-    """CREATE TABLE IF NOT EXISTS wishlist(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL, product_id INTEGER NOT NULL, UNIQUE(user_id,product_id))""",
-    """CREATE TABLE IF NOT EXISTS addresses(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL, full_name VARCHAR(120), phone VARCHAR(40), address TEXT, city VARCHAR(80), postal_code VARCHAR(30), instructions TEXT)""",
-    """CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL, total NUMERIC(12,2) NOT NULL, shipping_address TEXT NOT NULL, payment_method VARCHAR(40) DEFAULT 'COD', payment_status VARCHAR(40) DEFAULT 'Pending', status VARCHAR(40) DEFAULT 'Pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
-    """CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, order_id INTEGER NOT NULL, product_id INTEGER NOT NULL, quantity INTEGER NOT NULL, price NUMERIC(12,2) NOT NULL, size VARCHAR(30), color VARCHAR(50))""",
-    """CREATE TABLE IF NOT EXISTS tryon_history(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL, product_id INTEGER NOT NULL, job_id VARCHAR(255), status VARCHAR(40), result_url TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name VARCHAR(180) NOT NULL, slug VARCHAR(220) UNIQUE NOT NULL, brand VARCHAR(120), category VARCHAR(120) NOT NULL, description TEXT, price NUMERIC(12,2) NOT NULL CHECK(price>0), original_price NUMERIC(12,2), discount NUMERIC(5,2) DEFAULT 0, stock INTEGER DEFAULT 0 CHECK(stock>=0), sizes TEXT, colors TEXT, rating NUMERIC(3,2) DEFAULT 0 CHECK(rating>=0 AND rating<=5), review_count INTEGER DEFAULT 0, tags TEXT, image_url TEXT NOT NULL, additional_images TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS cart_items(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, quantity INTEGER NOT NULL CHECK(quantity>0), size VARCHAR(30), color VARCHAR(50), UNIQUE(user_id,product_id,size,color))""",
+    """CREATE TABLE IF NOT EXISTS wishlist(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, UNIQUE(user_id,product_id))""",
+    """CREATE TABLE IF NOT EXISTS addresses(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, full_name VARCHAR(120), phone VARCHAR(40), address TEXT, city VARCHAR(80), postal_code VARCHAR(30), instructions TEXT)""",
+    """CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT, total NUMERIC(12,2) NOT NULL CHECK(total>=0), shipping_address TEXT NOT NULL, payment_method VARCHAR(40) DEFAULT 'COD', payment_status VARCHAR(40) DEFAULT 'Pending', status VARCHAR(40) DEFAULT 'Pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, quantity INTEGER NOT NULL CHECK(quantity>0), price NUMERIC(12,2) NOT NULL CHECK(price>=0), size VARCHAR(30), color VARCHAR(50))""",
+    """CREATE TABLE IF NOT EXISTS tryon_history(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, job_id VARCHAR(255), status VARCHAR(40), result_url TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS categories_meta(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name VARCHAR(120) UNIQUE NOT NULL)"""
     ]
     with engine.begin() as c:
@@ -106,6 +112,19 @@ def init_db():
                 c.execute(text("""INSERT INTO products(name,slug,brand,category,description,price,original_price,discount,stock,sizes,colors,rating,review_count,tags,image_url,additional_images)
                 VALUES(:name,:slug,:brand,:cat,:desc,:price,:orig,:disc,:stock,:sizes,:colors,:rating,:reviews,:tags,:image,:additional)"""),
                 dict(name=p[0],slug=slug,brand=p[1],cat=p[2],desc=f"{p[0]} by {p[1]}. Curated for everyday style with premium materials and an easy-to-wear silhouette.",price=float(p[3]),orig=float(p[4]),disc=round((1-float(p[3])/float(p[4]))*100,1),stock=p[5],sizes=p[6],colors=p[7],rating=float(p[8]),reviews=p[9],tags=p[10],image=p[11],additional=json.dumps([p[11]])))
+        for idx in [
+            "CREATE INDEX IF NOT EXISTS idx_products_category ON products(category)",
+            "CREATE INDEX IF NOT EXISTS idx_products_brand ON products(brand)",
+            "CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_cart_user ON cart_items(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_wishlist_user ON wishlist(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders(user_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)",
+            "CREATE INDEX IF NOT EXISTS idx_order_items_product ON order_items(product_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tryon_user_created ON tryon_history(user_id,created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_tryon_job_user ON tryon_history(job_id,user_id)"
+        ]:
+            c.execute(text(idx))
         admin=os.getenv("ADMIN_USERNAME")
         if admin and not c.execute(text("SELECT id FROM users WHERE username=:u"),{"u":admin}).first():
             pass
