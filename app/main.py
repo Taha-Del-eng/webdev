@@ -696,7 +696,9 @@ def admin_product():
     price=parse_money(f.get("price"));orig=parse_money(f.get("original_price",price));stock=parse_int(f.get("stock"),0,0,1000000);min_stock=parse_int(f.get("min_stock"),5,0,100000)
     status=f.get("status","active");featured=1 if f.get("featured") else 0
     sizes=f.get("sizes","One Size").strip() or "One Size";colors=f.get("colors","Black").strip() or "Black";tags=f.get("tags","casual").strip() or "casual";image=f.get("image_url","").strip()
+    image_file=request.files.get("image_file")
     if status not in {"active","draft","archived"} or not name or len(name)>180 or len(brand)>120 or len(cat)>120 or price<=0 or orig<price:abort(400,"Invalid product details.")
+    if image_file and image_file.filename:image=save_product_image(image_file)
     if not image:image="https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=900&q=85"
     if urlparse(image).scheme not in {"http","https"}:abort(400,"Product image must use HTTP(S).")
     slug=re.sub(r"[^a-z0-9]+","-",name.lower()).strip("-") or f"product-{secrets.token_hex(4)}"
@@ -817,6 +819,37 @@ def superadmin_permissions(aid):
         c.execute(text("DELETE FROM admin_permissions WHERE admin_id=:a"),{"a":aid})
         for perm in selected & ADMIN_PERMISSIONS:c.execute(text("INSERT INTO admin_permissions(admin_id,permission) VALUES(:a,:p)"),{"a":aid,"p":perm})
     admin_audit("admin_permissions_updated","admin",aid,",".join(sorted(selected)));return redirect(url_for("superadmin"))
+def save_product_image(file_obj):
+    raw=file_obj.read()
+    if not raw or len(raw)>8*1024*1024: abort(400,"Product image must be under 8MB.")
+    try:
+        img=Image.open(BytesIO(raw))
+        fmt=img.format
+        if fmt not in {"JPEG","PNG","WEBP"}: raise ValueError
+        img.verify()
+    except Exception:
+        abort(400,"Product image must be a valid JPG, PNG or WebP file.")
+    if all(os.getenv(k) for k in ("CLOUDINARY_CLOUD_NAME","CLOUDINARY_API_KEY","CLOUDINARY_API_SECRET")):
+        return upload_file(BytesIO(raw),folder="yours-mart/products")
+    root=os.path.join(BASE_DIR,"instance","product_images")
+    os.makedirs(root,exist_ok=True)
+    ext={"JPEG":"jpg","PNG":"png","WEBP":"webp"}[fmt]
+    filename=f"{uuid.uuid4().hex}.{ext}"
+    path=os.path.join(root,filename)
+    with open(path,"wb") as fh: fh.write(raw)
+    return url_for("product_media",filename=filename)
+
+@app.get("/media/products/<filename>")
+def product_media(filename):
+    if not re.fullmatch(r"[0-9a-f]{32}\.(?:jpg|png|webp)",filename): abort(404)
+    root=os.path.abspath(os.path.join(BASE_DIR,"instance","product_images"))
+    path=os.path.abspath(os.path.join(root,filename))
+    try:
+        if os.path.commonpath([root,path])!=root: abort(403)
+    except ValueError: abort(403)
+    if not os.path.isfile(path): abort(404)
+    return send_file(path)
+
 def private_payment_dir():
     path=os.path.join(BASE_DIR,"instance","private_payments")
     os.makedirs(path,exist_ok=True)
