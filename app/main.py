@@ -479,7 +479,60 @@ def account():
     orders=rows("SELECT * FROM orders WHERE user_id=:u ORDER BY created_at DESC",{"u":session["user_id"]})
     ps=product_query("JOIN wishlist w ON w.product_id=p.id WHERE w.user_id=:u AND p.status='active'",{"u":session["user_id"]},limit=50)
     history=rows("SELECT h.*,p.name,p.image_url FROM tryon_history h JOIN products p ON p.id=h.product_id WHERE h.user_id=:u ORDER BY h.created_at DESC LIMIT 20",{"u":session["user_id"]})
-    return render_template("account.html",tab=request.args.get("tab","orders"),products=ps,orders=orders,history=history,user=u)
+    addresses=rows("SELECT * FROM addresses WHERE user_id=:u ORDER BY is_default DESC,id DESC",{"u":session["user_id"]})
+    return render_template("account.html",tab=request.args.get("tab","orders"),products=ps,orders=orders,history=history,addresses=addresses,user=u)
+
+@app.post("/addresses")
+@login_required
+def add_address():
+    f=request.form
+    fields={k:f.get(k,"").strip() for k in ("full_name","phone","province","area","address","city","postal_code","instructions")}
+    if not all(fields[k] for k in ("full_name","phone","province","area","address","city")):
+        abort(400,"Please complete all required address fields.")
+    if any(len(fields[k])>limit for k,limit in {"full_name":120,"phone":40,"province":80,"area":120,"address":2000,"city":80,"postal_code":30,"instructions":500}.items()):
+        abort(400,"One or more address fields are too long.")
+    make_default=1 if f.get("is_default") else 0
+    with engine.begin() as c:
+        if make_default:
+            c.execute(text("UPDATE addresses SET is_default=0 WHERE user_id=:u"),{"u":session["user_id"]})
+        c.execute(text("""INSERT INTO addresses(user_id,full_name,phone,province,area,address,city,postal_code,instructions,is_default)
+                          VALUES(:u,:n,:ph,:pv,:ar,:a,:c,:pc,:i,:d)"""),
+                  {"u":session["user_id"],"n":fields["full_name"],"ph":fields["phone"],"pv":fields["province"],"ar":fields["area"],"a":fields["address"],"c":fields["city"],"pc":fields["postal_code"],"i":fields["instructions"],"d":make_default})
+    return redirect(url_for("account",tab="addresses"))
+
+@app.post("/addresses/<int:aid>/edit")
+@login_required
+def edit_address(aid):
+    if not one("SELECT id FROM addresses WHERE id=:a AND user_id=:u",{"a":aid,"u":session["user_id"]}): abort(404)
+    f=request.form
+    fields={k:f.get(k,"").strip() for k in ("full_name","phone","province","area","address","city","postal_code","instructions")}
+    if not all(fields[k] for k in ("full_name","phone","province","area","address","city")): abort(400,"Please complete all required address fields.")
+    with engine.begin() as c:
+        c.execute(text("""UPDATE addresses SET full_name=:n,phone=:ph,province=:pv,area=:ar,address=:a,city=:c,postal_code=:pc,instructions=:i
+                          WHERE id=:id AND user_id=:u"""),
+                  {"n":fields["full_name"],"ph":fields["phone"],"pv":fields["province"],"ar":fields["area"],"a":fields["address"],"c":fields["city"],"pc":fields["postal_code"],"i":fields["instructions"],"id":aid,"u":session["user_id"]})
+    return redirect(url_for("account",tab="addresses"))
+
+@app.post("/addresses/<int:aid>/default")
+@login_required
+def default_address(aid):
+    if not one("SELECT id FROM addresses WHERE id=:a AND user_id=:u",{"a":aid,"u":session["user_id"]}): abort(404)
+    with engine.begin() as c:
+        c.execute(text("UPDATE addresses SET is_default=0 WHERE user_id=:u"),{"u":session["user_id"]})
+        c.execute(text("UPDATE addresses SET is_default=1 WHERE id=:a AND user_id=:u"),{"a":aid,"u":session["user_id"]})
+    return redirect(url_for("account",tab="addresses"))
+
+@app.post("/addresses/<int:aid>/delete")
+@login_required
+def delete_address(aid):
+    if not one("SELECT id FROM addresses WHERE id=:a AND user_id=:u",{"a":aid,"u":session["user_id"]}): abort(404)
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM addresses WHERE id=:a AND user_id=:u"),{"a":aid,"u":session["user_id"]})
+        remaining=c.execute(text("SELECT id FROM addresses WHERE user_id=:u ORDER BY id LIMIT 1"),{"u":session["user_id"]}).first()
+        if remaining:
+            has_default=c.execute(text("SELECT id FROM addresses WHERE user_id=:u AND is_default=1 LIMIT 1"),{"u":session["user_id"]}).first()
+            if not has_default:c.execute(text("UPDATE addresses SET is_default=1 WHERE id=:a"),{"a":remaining[0]})
+    return redirect(url_for("account",tab="addresses"))
 
 @app.route("/profile",methods=["GET","POST"])
 @login_required
