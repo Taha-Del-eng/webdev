@@ -174,8 +174,11 @@ def product_query(where="",params={},order="p.created_at DESC",limit=None,offset
 
 @app.get("/")
 def home():
-    products=product_query(limit=8)
-    return render_template("landing.html", trending=products[:4], new_arrivals=products[:4], best_sellers=sorted(products,key=lambda x:-float(x["rating"]))[:4], categories=rows("SELECT * FROM categories ORDER BY name"), recommended=products[4:8])
+    trending=product_query(order="p.rating DESC, p.review_count DESC",limit=4)
+    new_arrivals=product_query(order="p.created_at DESC",limit=4)
+    best_sellers=product_query(order="p.review_count DESC, p.rating DESC",limit=4)
+    recommended=product_query(order="p.rating DESC, p.created_at DESC",limit=4)
+    return render_template("landing.html",trending=trending,new_arrivals=new_arrivals,best_sellers=best_sellers,categories=rows("SELECT * FROM categories ORDER BY name"),recommended=recommended)
 
 @app.get("/shop")
 def shop():
