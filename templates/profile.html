@@ -67,16 +67,17 @@
     {% endif %}
 
     <form method="post" action="/profile">
-      <input type="text" name="full_name" value="{{ user['full_name'] }}" placeholder="Full name" required />
-      <input type="email" name="email" value="{{ user['email'] }}" placeholder="Email" required />
-      <input type="text" name="username" value="{{ user['username'] }}" placeholder="Username" required />
-      <input type="password" name="password" value="{{ user['password'] }}" placeholder="Password" required />
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}" />
+      <input type="text" name="full_name" value="{{ user['full_name'] }}" placeholder="Full name" maxlength="120" required />
+      <input type="email" name="email" value="{{ user['email'] }}" placeholder="Email" maxlength="180" required />
+      <input type="text" name="username" value="{{ user['username'] }}" placeholder="Username" maxlength="80" required />
+      <input type="password" name="password" placeholder="New password (leave blank to keep current)" autocomplete="new-password" />
       <button type="submit">Update Profile</button>
     </form>
 
     <div class="link-row">
       <a href="/shop">Back to shop</a>
-      <a href="/logout">Logout</a>
+      <form method="post" action="/logout" style="display:inline"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button type="submit">Logout</button></form>
     </div>
   </div>
 </body>
