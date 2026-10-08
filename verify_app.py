@@ -17,7 +17,7 @@ assert client.get("/health").json["status"]=="ok"
 assert client.get("/product/aero-oversized-tee").status_code==200
 
 # CSRF is required for every state-changing request.
-assert client.post("/logout").status_code in (302, 401)
+assert client.post("/logout").status_code == 400
 assert client.get("/logout").status_code == 405
 
 def csrf():
