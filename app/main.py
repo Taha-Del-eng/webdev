@@ -738,8 +738,27 @@ def admin_order(oid):
     if status not in allowed:abort(400)
     o=one("SELECT * FROM orders WHERE id=:o",{"o":oid})
     if not o:abort(404)
-    if status=="Delivered" and o["payment_method"]=="Easypaisa" and o["payment_status"]!="Verified":abort(400,"Payment must be verified before delivery.")
-    exec_sql("UPDATE orders SET status=:s,updated_at=CURRENT_TIMESTAMP WHERE id=:o",{"s":status,"o":oid});admin_audit("order_status_changed","order",oid,status);return redirect(url_for("admin"))
+    current=o["status"]
+    transitions={
+        "Pending Payment":{"Payment Verification","Cancelled"},
+        "Payment Verification":{"Confirmed","Cancelled"},
+        "Confirmed":{"Processing","Cancelled"},
+        "Processing":{"Packed","Cancelled"},
+        "Packed":{"Shipped"},
+        "Shipped":{"Out for Delivery","Returned"},
+        "Out for Delivery":{"Delivered","Returned"},
+        "Delivered":{"Returned"},
+        "Returned":{"Refunded"},
+        "Cancelled":set(),
+        "Refunded":set(),
+    }
+    if status==current or status not in transitions.get(current,set()):
+        abort(400,"Invalid order status transition.")
+    if status in {"Confirmed","Processing","Packed","Shipped","Out for Delivery","Delivered"} and o["payment_status"]!="Verified":
+        abort(400,"Payment must be verified before fulfillment.")
+    exec_sql("UPDATE orders SET status=:s,updated_at=CURRENT_TIMESTAMP WHERE id=:o",{"s":status,"o":oid})
+    admin_audit("order_status_changed","order",oid,status)
+    return redirect(url_for("admin"))
 
 @app.post("/admin/payment/<int:payment_id>")
 @admin_required("manage_payments")
