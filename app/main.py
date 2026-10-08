@@ -1,9 +1,11 @@
 import os, json, math, re, secrets
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort, flash
 from sqlalchemy import create_engine, text
 from werkzeug.security import generate_password_hash, check_password_hash
+from PIL import Image, UnidentifiedImageError
+from io import BytesIO
 from dotenv import load_dotenv
 from .services.ai_tryon import generate_virtual_tryon, get_virtual_tryon_status, TryOnError
 from .services.recommendations import recommend
@@ -16,8 +18,16 @@ if DATABASE_URL.startswith("postgres://"): DATABASE_URL=DATABASE_URL.replace("po
 elif DATABASE_URL.startswith("postgresql://"): DATABASE_URL=DATABASE_URL.replace("postgresql://","postgresql+psycopg://",1)
 engine=create_engine(DATABASE_URL, pool_pre_ping=True, future=True, connect_args={"check_same_thread":False} if DATABASE_URL.startswith("sqlite") else {})
 app=Flask(__name__, template_folder=os.path.join(BASE_DIR,"templates"), static_folder=os.path.join(BASE_DIR,"static"))
-app.config.update(SECRET_KEY=os.getenv("SECRET_KEY") or secrets.token_hex(32), MAX_CONTENT_LENGTH=8*1024*1024,
-                  SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=os.getenv("VERCEL")=="1")
+secret_key=os.getenv("SECRET_KEY")
+if not secret_key and (os.getenv("VERCEL")=="1" or os.getenv("FLASK_ENV")=="production"):
+    raise RuntimeError("SECRET_KEY must be configured in production.")
+secure_cookie=os.getenv("SESSION_COOKIE_SECURE")
+if secure_cookie is None:
+    secure_cookie=os.getenv("VERCEL")=="1"
+app.config.update(SECRET_KEY=secret_key or secrets.token_hex(32), MAX_CONTENT_LENGTH=8*1024*1024,
+                  SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
+                  SESSION_COOKIE_SECURE=str(secure_cookie).lower() in {"1","true","yes"},
+                  PERMANENT_SESSION_LIFETIME=timedelta(days=14))
 CATEGORIES=["Men / T-Shirts","Men / Shirts","Men / Polo Shirts","Men / Hoodies","Men / Sweatshirts","Men / Jackets","Men / Jeans","Men / Trousers","Men / Kurta","Men / Shalwar Kameez","Men / Formal Wear","Women / Dresses","Women / Tops","Women / Shirts","Women / Abayas","Women / Hijabs","Women / Trousers","Women / Jeans","Women / Kurtis","Women / Formal Wear","Other / Shoes","Other / Watches","Other / Bags","Other / Belts","Other / Jewelry","Other / Accessories"]
 
 SEED=[
@@ -43,6 +53,29 @@ SEED=[
 
 def db():
     return engine.connect()
+
+def parse_int(value, default=0, minimum=None, maximum=None):
+    try:
+        n=int(str(value).strip())
+    except (TypeError, ValueError):
+        n=default
+    if minimum is not None: n=max(minimum,n)
+    if maximum is not None: n=min(maximum,n)
+    return n
+
+def parse_money(value, default=0.0, minimum=0.0, maximum=999999999.0):
+    try:
+        n=float(str(value).replace(",","").strip())
+    except (TypeError, ValueError):
+        n=default
+    if not math.isfinite(n): n=default
+    return max(minimum,min(maximum,n))
+
+def csv_values(value):
+    return [x.strip() for x in (value or "").split(",") if x.strip()]
+
+def valid_email(value):
+    return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]{2,}", value or ""))
 
 def init_db():
     ddl=[
@@ -97,6 +130,16 @@ def protect():
         token=request.headers.get("X-CSRFToken") or request.form.get("_csrf")
         if not token or not secrets.compare_digest(token,session.get("csrf","")): abort(400,"Invalid CSRF token.")
 
+@app.after_request
+def security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options","nosniff")
+    response.headers.setdefault("X-Frame-Options","DENY")
+    response.headers.setdefault("Referrer-Policy","strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy","camera=(), microphone=(), geolocation=()")
+    if request.is_secure or os.getenv("VERCEL")=="1":
+        response.headers.setdefault("Strict-Transport-Security","max-age=31536000; includeSubDomains")
+    return response
+
 @app.context_processor
 def context():
     count=0
@@ -139,7 +182,7 @@ def shop():
     q=request.args.get("q","").strip(); cat=request.args.get("category","").strip(); brand=request.args.get("brand","").strip()
     color=request.args.get("color","").strip(); size=request.args.get("size","").strip(); rating=request.args.get("rating","").strip()
     minp=request.args.get("min",""); maxp=request.args.get("max",""); sort=request.args.get("sort","newest")
-    page=max(1,int(request.args.get("page",1))); per=12
+    page=parse_int(request.args.get("page",1),1,1,100000); per=12
     cond=[]; par={}
     if q: cond.append("(LOWER(p.name) LIKE LOWER(:q) OR LOWER(p.brand) LIKE LOWER(:q) OR LOWER(p.category) LIKE LOWER(:q) OR LOWER(p.description) LIKE LOWER(:q) OR LOWER(p.tags) LIKE LOWER(:q) OR LOWER(p.colors) LIKE LOWER(:q))"); par["q"]=f"%{q}%"
     if cat: cond.append("p.category=:cat"); par["cat"]=cat
@@ -166,7 +209,11 @@ def product(slug):
 def signup():
     if request.method=="POST":
         name,email,user,pwd=[request.form.get(x,"").strip() for x in ("full_name","email","username","password")]
-        if len(pwd)<8: return render_template("auth.html",mode="signup",error="Password must be at least 8 characters.")
+        email=email.lower()
+        if not name or len(name)>120: return render_template("auth.html",mode="signup",error="Please enter a valid full name.")
+        if not valid_email(email) or len(email)>180: return render_template("auth.html",mode="signup",error="Please enter a valid email address.")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{3,80}",user): return render_template("auth.html",mode="signup",error="Username must be 3–80 characters using letters, numbers, dots, underscores or hyphens.")
+        if len(pwd)<8 or len(pwd)>128: return render_template("auth.html",mode="signup",error="Password must be between 8 and 128 characters.")
         try:
             with engine.begin() as c: c.execute(text("INSERT INTO users(full_name,email,username,password_hash) VALUES(:n,:e,:u,:p)"),{"n":name,"e":email.lower(),"u":user,"p":generate_password_hash(pwd)})
             u=one("SELECT id FROM users WHERE username=:u",{"u":user}); session.clear(); session["user_id"]=u["id"]; return redirect(url_for("shop"))
@@ -182,8 +229,11 @@ def login():
         return render_template("auth.html",mode="login",error="Invalid username/email or password.")
     return render_template("auth.html",mode="login")
 
-@app.get("/logout")
-def logout(): session.clear(); return redirect(url_for("home"))
+@app.post("/logout")
+@login_required
+def logout():
+    session.clear()
+    return redirect(url_for("home"))
 
 @app.route("/admin-login",methods=["GET","POST"])
 def admin_login():
@@ -211,8 +261,13 @@ def toggle_wishlist(pid):
 @app.post("/cart/add/<int:pid>")
 @login_required
 def add_cart(pid):
-    p=one("SELECT * FROM products WHERE id=:p",{"p":pid}); qty=max(1,int(request.form.get("quantity",1))); size=request.form.get("size") or None; color=request.form.get("color") or None
+    p=one("SELECT * FROM products WHERE id=:p",{"p":pid})
+    qty=parse_int(request.form.get("quantity",1),1,1,100)
+    size=(request.form.get("size") or "").strip() or None
+    color=(request.form.get("color") or "").strip() or None
     if not p or p["stock"]<1: abort(400,"Product is out of stock.")
+    if size and size not in csv_values(p.get("sizes")): abort(400,"Invalid size for this product.")
+    if color and color not in csv_values(p.get("colors")): abort(400,"Invalid colour for this product.")
     existing=one("SELECT * FROM cart_items WHERE user_id=:u AND product_id=:p AND COALESCE(size,'')=COALESCE(:s,'') AND COALESCE(color,'')=COALESCE(:c,'')",{"u":session["user_id"],"p":pid,"s":size,"c":color})
     with engine.begin() as c:
         if existing:
@@ -252,15 +307,20 @@ def checkout():
     subtotal=sum(float(i["price"])*i["quantity"] for i in items); shipping=0 if subtotal>=5000 else 250; total=subtotal+shipping
     if request.method=="POST":
         fields={k:request.form.get(k,"").strip() for k in ("full_name","phone","address","city","postal_code","instructions")}
-        if not all(fields[k] for k in ("full_name","phone","address","city","postal_code")): return render_template("checkout.html",items=items,total=total,subtotal=subtotal,shipping=shipping,error="Please complete all required delivery fields.")
+        if not all(fields[k] for k in ("full_name","phone","address","city","postal_code")):
+            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,shipping=shipping,error="Please complete all required delivery fields.")
+        if any(len(fields[k])>500 for k in ("address","instructions")) or len(fields["full_name"])>120 or len(fields["city"])>80 or len(fields["postal_code"])>30 or len(fields["phone"])>40:
+            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,shipping=shipping,error="One or more delivery fields are too long.")
         with engine.begin() as c:
             for i in items:
-                if i["stock"]<i["quantity"]: abort(400,f"Not enough stock for {i['name']}.")
-            r=c.execute(text("INSERT INTO orders(user_id,total,shipping_address,payment_method,payment_status,status) VALUES(:u,:t,:a,'COD','Pending','Pending') RETURNING id"),{"u":session["user_id"],"t":total,"a":json.dumps(fields)})
+                updated=c.execute(text("UPDATE products SET stock=stock-:q,updated_at=CURRENT_TIMESTAMP WHERE id=:p AND stock>=:q"),{"q":i["quantity"],"p":i["product_id"]})
+                if updated.rowcount != 1:
+                    raise ValueError(f"Not enough stock for {i['name']}.")
+            r=c.execute(text("INSERT INTO orders(user_id,total,shipping_address,payment_method,payment_status,status) VALUES(:u,:t,:a,'COD','Pending','Pending') RETURNING id"),{"u":session["user_id"],"t=total,"a":json.dumps(fields)})
             oid=r.scalar_one()
+            c.execute(text("INSERT INTO addresses(user_id,full_name,phone,address,city,postal_code,instructions) VALUES(:u,:n,:ph,:a,:c,:pc,:i)"),{"u":session["user_id"],"n":fields["full_name"],"ph":fields["phone"],"a":fields["address"],"c":fields["city"],"pc":fields["postal_code"],"i":fields["instructions"]})
             for i in items:
                 c.execute(text("INSERT INTO order_items(order_id,product_id,quantity,price,size,color) VALUES(:o,:p,:q,:pr,:s,:c)"),{"o":oid,"p":i["product_id"],"q":i["quantity"],"pr":i["price"],"s":i.get("size"),"c":i.get("color")})
-                c.execute(text("UPDATE products SET stock=stock-:q,updated_at=CURRENT_TIMESTAMP WHERE id=:p"),{"q":i["quantity"],"p":i["product_id"]})
             c.execute(text("DELETE FROM cart_items WHERE user_id=:u"),{"u":session["user_id"]})
         return render_template("checkout.html",items=[],total=0,subtotal=0,shipping=0,success=f"Order #{oid} placed successfully. Cash on Delivery selected.")
     return render_template("checkout.html",items=items,total=total,subtotal=subtotal,shipping=shipping)
@@ -296,7 +356,14 @@ def tryon_start(pid):
     f=request.files.get("photo")
     if not p or not f:return jsonify(error="Product and photo are required."),400
     if f.mimetype not in {"image/jpeg","image/png","image/webp"}:return jsonify(error="Use JPG, PNG, or WebP."),400
-    result=generate_virtual_tryon((f.read(),f.mimetype),p["image_url"])
+    raw=f.read()
+    if not raw or len(raw)>8*1024*1024:return jsonify(error="Image must be between 1 byte and 8MB."),400
+    try:
+        img=Image.open(BytesIO(raw))
+        img.verify()
+    except (UnidentifiedImageError, OSError):
+        return jsonify(error="The uploaded file is not a valid image."),400
+    result=generate_virtual_tryon((raw,f.mimetype),p["image_url"])
     with engine.begin() as c:
         if result["mode"]=="mock":
             c.execute(text("INSERT INTO tryon_history(user_id,product_id,status,result_url) VALUES(:u,:p,'mock',:r)"),{"u":session["user_id"],"p":pid,"r":p["image_url"]})
@@ -308,8 +375,10 @@ def tryon_start(pid):
 @app.get("/api/tryon/status/<job_id>")
 @login_required
 def tryon_status(job_id):
+    owned=one("SELECT id FROM tryon_history WHERE job_id=:j AND user_id=:u",{"j":job_id,"u":session["user_id"]})
+    if not owned:return jsonify(error="Try-on job not found."),404
     try:r=get_virtual_tryon_status(job_id)
-    except TryOnError as e:return jsonify(status="failed",error=str(e)),502
+    except TryOnError as e:return jsonify(status="failed",error="The AI provider is temporarily unavailable."),502
     if r.get("status")=="completed":
         with engine.begin() as c:c.execute(text("UPDATE tryon_history SET status='completed',result_url=:r WHERE job_id=:j AND user_id=:u"),{"r":r.get("output"),"j":job_id,"u":session["user_id"]})
     elif r.get("status")=="failed":
@@ -380,7 +449,10 @@ def admin():
 def admin_product():
     f=request.form
     pid=f.get("id"); name=f.get("name","").strip(); brand=f.get("brand","").strip(); cat=f.get("category","").strip()
-    price=float(f.get("price",0)); orig=float(f.get("original_price",price)); stock=int(f.get("stock",0)); sizes=f.get("sizes","S,M,L,XL"); colors=f.get("colors","Black"); tags=f.get("tags","casual"); image=f.get("image_url","").strip()
+    price=parse_money(f.get("price",0)); orig=parse_money(f.get("original_price",price)); stock=parse_int(f.get("stock",0),0,0,1000000)
+    sizes=f.get("sizes","S,M,L,XL").strip() or "One Size"; colors=f.get("colors","Black").strip() or "Black"; tags=f.get("tags","casual").strip() or "casual"; image=f.get("image_url","").strip()
+    if not name or len(name)>180 or len(brand)>120 or len(cat)>120: abort(400,"Invalid product details.")
+    if price<=0 or orig<price: abort(400,"Original price must be greater than or equal to sale price.")
     if not image and request.files.get("image") and request.files["image"].filename:
         try:image=upload_file(request.files["image"])
         except Exception: image=""
@@ -395,6 +467,11 @@ def admin_product():
 @app.post("/admin/product/delete/<int:pid>")
 @admin_required
 def admin_product_delete(pid):
+    refs=one("SELECT (SELECT COUNT(*) FROM order_items WHERE product_id=:p) orders,(SELECT COUNT(*) FROM cart_items WHERE product_id=:p) carts,(SELECT COUNT(*) FROM wishlist WHERE product_id=:p) wishes",{"p":pid})
+    if not refs: abort(404)
+    if int(refs["orders"]) or int(refs["carts"]) or int(refs["wishes"]):
+        flash("This product cannot be deleted because it is referenced by an order, cart, or wishlist. Set stock to 0 instead.")
+        return redirect(url_for("admin"))
     with engine.begin() as c:c.execute(text("DELETE FROM products WHERE id=:p"),{"p":pid})
     return redirect(url_for("admin"))
 
@@ -415,7 +492,12 @@ def admin_category():
     return redirect(url_for("admin"))
 
 @app.get("/health")
-def health(): return jsonify(status="ok",database="configured",app="yours-mart")
+def health():
+    try:
+        one("SELECT 1")
+        return jsonify(status="ok",database="ok",app="yours-mart")
+    except Exception:
+        return jsonify(status="degraded",database="unavailable",app="yours-mart"),503
 
 @app.errorhandler(404)
 def not_found(e): return render_template("error.html",code=404,message="That page does not exist."),404
