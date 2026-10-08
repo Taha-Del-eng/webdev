@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, text
 from werkzeug.security import generate_password_hash, check_password_hash
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 from .services.ai_tryon import generate_virtual_tryon, get_virtual_tryon_status, TryOnError
 from .services.recommendations import recommend
@@ -469,10 +470,22 @@ def admin_product():
     if not name or len(name)>180 or len(brand)>120 or len(cat)>120: abort(400,"Invalid product details.")
     if price<=0 or orig<price: abort(400,"Original price must be greater than or equal to sale price.")
     if not image and request.files.get("image") and request.files["image"].filename:
-        try:image=upload_file(request.files["image"])
-        except Exception: image=""
+        upload=request.files["image"]
+        raw=upload.read()
+        try:
+            img=Image.open(BytesIO(raw))
+            img.verify()
+            if len(raw)>8*1024*1024: raise ValueError("image too large")
+            image=upload_file(BytesIO(raw))
+        except (UnidentifiedImageError,OSError,ValueError,RuntimeError):
+            abort(400,"Invalid product image.")
     if not image:image="https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=900&q=85"
-    slug=re.sub(r"[^a-z0-9]+","-",name.lower()).strip("-")
+    parsed=urlparse(image)
+    if parsed.scheme not in {"http","https"}: abort(400,"Product image must use an HTTP(S) URL.")
+    slug=re.sub(r"[^a-z0-9]+","-",name.lower()).strip("-") or f"product-{secrets.token_hex(4)}"
+    existing=one("SELECT id FROM products WHERE slug=:s",{"s":slug})
+    if existing and (not pid or int(existing["id"])!=int(pid)):
+        slug=f"{slug}-{secrets.token_hex(3)}"
     data={"name":name,"brand":brand,"cat":cat,"price":price,"orig":orig,"disc":round((1-price/orig)*100,1) if orig else 0,"stock":stock,"sizes":sizes,"colors":colors,"tags":tags,"image":image,"slug":slug,"desc":f"{name} by {brand}."}
     with engine.begin() as c:
         if pid:c.execute(text("""UPDATE products SET name=:name,slug=:slug,brand=:brand,category=:cat,description=:desc,price=:price,original_price=:orig,discount=:disc,stock=:stock,sizes=:sizes,colors=:colors,tags=:tags,image_url=:image,updated_at=CURRENT_TIMESTAMP WHERE id=:id"""),{**data,"id":int(pid)})
