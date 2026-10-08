@@ -292,10 +292,39 @@ def shop():
 
 @app.get("/product/<slug>")
 def product(slug):
-    p=product_dict(one("SELECT * FROM products WHERE slug=:s",{"s":slug}))
+    p=product_dict(one("SELECT * FROM products WHERE slug=:s AND status='active'",{"s":slug}))
     if not p: abort(404)
-    allp=product_query(limit=40)
-    return render_template("product.html",product=p,similar=recommend(allp,p,4),complete=recommend(allp,{"id":-1,"category":p["category"],"price":p["price"],"tags":",".join(p["tags"])},4))
+    allp=product_query("WHERE p.status='active'",limit=40)
+    reviews=rows("""SELECT r.rating,r.body,r.created_at,u.username
+                    FROM reviews r JOIN users u ON u.id=r.user_id
+                    WHERE r.product_id=:p ORDER BY r.created_at DESC LIMIT 50""",{"p":p["id"]})
+    return render_template("product.html",product=p,reviews=reviews,similar=recommend(allp,p,4),complete=recommend(allp,{"id":-1,"category":p["category"],"price":p["price"],"tags":",".join(p["tags"])},4))
+
+@app.post("/product/<int:pid>/review")
+@login_required
+def add_review(pid):
+    if not one("SELECT id FROM products WHERE id=:p AND status='active'",{"p":pid}): abort(404)
+    rating=parse_int(request.form.get("rating"),0,1,5)
+    body=request.form.get("body","").strip()
+    if rating<1 or len(body)>2000: abort(400,"Please provide a rating from 1 to 5 and review text under 2000 characters.")
+    delivered=one("""SELECT oi.order_id FROM order_items oi JOIN orders o ON o.id=oi.order_id
+                     WHERE o.user_id=:u AND oi.product_id=:p AND o.status='Delivered' LIMIT 1""",{"u":session["user_id"],"p":pid})
+    if not delivered: abort(403,"You can review a product after a delivered order.")
+    existing=one("SELECT id FROM reviews WHERE user_id=:u AND product_id=:p",{"u":session["user_id"],"p":pid})
+    try:
+        with engine.begin() as c:
+            if existing:
+                c.execute(text("UPDATE reviews SET rating=:r,body=:b WHERE id=:i"),{"r":rating,"b":body,"i":existing["id"]})
+            else:
+                c.execute(text("INSERT INTO reviews(user_id,product_id,order_id,rating,body) VALUES(:u,:p,:o,:r,:b)"),
+                          {"u":session["user_id"],"p":pid,"o":delivered["order_id"],"r":rating,"b":body})
+            c.execute(text("""UPDATE products SET rating=(SELECT COALESCE(AVG(rating),0) FROM reviews WHERE product_id=:p),
+                              review_count=(SELECT COUNT(*) FROM reviews WHERE product_id=:p),
+                              updated_at=CURRENT_TIMESTAMP WHERE id=:p"""),{"p":pid})
+    except Exception:
+        abort(400,"Your review could not be saved.")
+    slug=one("SELECT slug FROM products WHERE id=:p",{"p":pid})["slug"]
+    return redirect(url_for("product",slug=slug))
 
 @app.route("/signup",methods=["GET","POST"])
 def signup():
@@ -443,11 +472,38 @@ def checkout():
 @app.get("/account")
 @login_required
 def account():
-    u=one("SELECT * FROM users WHERE id=:u",{"u":session["user_id"]})
+    u=one("SELECT id,full_name,email,username,created_at FROM users WHERE id=:u",{"u":session["user_id"]})
     orders=rows("SELECT * FROM orders WHERE user_id=:u ORDER BY created_at DESC",{"u":session["user_id"]})
-    ps=product_query("JOIN wishlist w ON w.product_id=p.id WHERE w.user_id=:u",{"u":session["user_id"]},limit=50)
+    ps=product_query("JOIN wishlist w ON w.product_id=p.id WHERE w.user_id=:u AND p.status='active'",{"u":session["user_id"]},limit=50)
     history=rows("SELECT h.*,p.name,p.image_url FROM tryon_history h JOIN products p ON p.id=h.product_id WHERE h.user_id=:u ORDER BY h.created_at DESC LIMIT 20",{"u":session["user_id"]})
     return render_template("account.html",tab=request.args.get("tab","orders"),products=ps,orders=orders,history=history,user=u)
+
+@app.route("/profile",methods=["GET","POST"])
+@login_required
+def profile():
+    current=one("SELECT id,full_name,email,username FROM users WHERE id=:u",{"u":session["user_id"]})
+    if request.method=="POST":
+        name=request.form.get("full_name","").strip()
+        email=request.form.get("email","").strip().lower()
+        username=request.form.get("username","").strip()
+        password=request.form.get("password","")
+        if not name or len(name)>120 or not valid_email(email) or len(email)>180 or not re.fullmatch(r"[A-Za-z0-9_.-]{3,80}",username):
+            return render_template("profile.html",user=current,error="Please enter valid profile details.")
+        if password and (len(password)<8 or len(password)>128):
+            return render_template("profile.html",user=current,error="Password must be between 8 and 128 characters.")
+        try:
+            with engine.begin() as c:
+                params={"n":name,"e":email,"u":username,"id":session["user_id"]}
+                if password:
+                    params["p"]=generate_password_hash(password)
+                    c.execute(text("UPDATE users SET full_name=:n,email=:e,username=:u,password_hash=:p,updated_at=CURRENT_TIMESTAMP WHERE id=:id"),params)
+                else:
+                    c.execute(text("UPDATE users SET full_name=:n,email=:e,username=:u,updated_at=CURRENT_TIMESTAMP WHERE id=:id"),params)
+        except Exception:
+            return render_template("profile.html",user=current,error="Email or username is already in use.")
+        current=one("SELECT id,full_name,email,username FROM users WHERE id=:u",{"u":session["user_id"]})
+        return render_template("profile.html",user=current,success="Profile updated successfully.",error=None)
+    return render_template("profile.html",user=current,success=None,error=None)
 
 @app.get("/orders/<int:oid>")
 @login_required
