@@ -95,7 +95,7 @@ def init_db():
     """CREATE TABLE IF NOT EXISTS cart_items(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, quantity INTEGER NOT NULL CHECK(quantity>0), size VARCHAR(30), color VARCHAR(50), UNIQUE(user_id,product_id,size,color))""",
     """CREATE TABLE IF NOT EXISTS wishlist(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, UNIQUE(user_id,product_id))""",
     """CREATE TABLE IF NOT EXISTS addresses(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, full_name VARCHAR(120), phone VARCHAR(40), address TEXT, city VARCHAR(80), postal_code VARCHAR(30), instructions TEXT)""",
-    """CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT, total NUMERIC(12,2) NOT NULL CHECK(total>=0), shipping_address TEXT NOT NULL, payment_method VARCHAR(40) DEFAULT 'COD', payment_status VARCHAR(40) DEFAULT 'Pending', status VARCHAR(40) DEFAULT 'Pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT, total NUMERIC(12,2) NOT NULL CHECK(total>=0), shipping_address TEXT NOT NULL, payment_method VARCHAR(40) DEFAULT 'Easypaisa', payment_status VARCHAR(40) DEFAULT 'Pending', status VARCHAR(40) DEFAULT 'Pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS order_items(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, quantity INTEGER NOT NULL CHECK(quantity>0), price NUMERIC(12,2) NOT NULL CHECK(price>=0), size VARCHAR(30), color VARCHAR(50))""",
     """CREATE TABLE IF NOT EXISTS tryon_history(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, job_id VARCHAR(255), status VARCHAR(40), result_url TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS categories_meta(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name VARCHAR(120) UNIQUE NOT NULL)"""
@@ -446,7 +446,7 @@ def checkout():
         if not all(fields[k] for k in ("full_name","phone","province","area","address","city")):
             return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="Please complete all required delivery details.",payment_account=account,payment_account_name=account_name)
         method=request.form.get("payment_method","").strip().lower()
-        if method not in {"cod","easypaisa"}:abort(400,"Unsupported payment method.")
+        if method!="easypaisa":abort(400,"Only Easypaisa / Bank Transfer is supported.")
         proof=request.files.get("payment_proof");txref=request.form.get("transaction_ref","").strip()
         if method=="easypaisa" and (not proof or not proof.filename or not txref):
             return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="Easypaisa requires the transaction/reference number and payment screenshot.",payment_account=account,payment_account_name=account_name)
@@ -454,13 +454,13 @@ def checkout():
         for i in items:
             if i["status"]!="active" or int(i["stock"])<int(i["quantity"]):
                 return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error=f"{i['name']} is no longer available in the requested quantity.",payment_account=account,payment_account_name=account_name)
-        proof_path=save_private_payment_proof(proof) if method=="easypaisa" else None
-        payment_status="Pending Verification" if method=="easypaisa" else "Pending"
-        order_status="Payment Verification" if method=="easypaisa" else "Confirmed"
+        proof_path=save_private_payment_proof(proof)
+        payment_status="Pending Verification"
+        order_status="Payment Verification"
         with engine.begin() as c:
             order_number=f"YM-{secrets.token_hex(4).upper()}"
             r=c.execute(text("""INSERT INTO orders(order_number,user_id,subtotal,discount,shipping_fee,total,shipping_address,payment_method,payment_status,status)
-                VALUES(:n,:u,:sub,0,:sf,:t,:addr,:m,:ps,:st) RETURNING id"""),{"n":order_number,"u":session["user_id"],"sub":subtotal,"sf":shipping,"t":total,"addr":json.dumps(fields),"m":"Easypaisa" if method=="easypaisa" else "COD","ps":payment_status,"st":order_status})
+                VALUES(:n,:u,:sub,0,:sf,:t,:addr,:m,:ps,:st) RETURNING id"""),{"n":order_number,"u":session["user_id"],"sub":subtotal,"sf":shipping,"t":total,"addr":json.dumps(fields),"m":"Easypaisa","ps":payment_status,"st":order_status})
             oid=r.scalar_one()
             for i in items:
                 upd=c.execute(text("UPDATE products SET stock=stock-:q,updated_at=CURRENT_TIMESTAMP WHERE id=:p AND status='active' AND stock>=:q"),{"q":i["quantity"],"p":i["product_id"]})
@@ -594,7 +594,7 @@ def tryon(slug):
 def tryon_start(pid):
     p=one("SELECT * FROM products WHERE id=:p",{"p":pid})
     f=request.files.get("photo")
-    if not p or not f:return jsonify(error="Product and photo are required."),400
+    if not p or p.get("status")!="active" or not f:return jsonify(error="An active product and photo are required."),400
     if f.mimetype not in {"image/jpeg","image/png","image/webp"}:return jsonify(error="Use JPG, PNG, or WebP."),400
     raw=f.read()
     if not raw or len(raw)>8*1024*1024:return jsonify(error="Image must be between 1 byte and 8MB."),400
