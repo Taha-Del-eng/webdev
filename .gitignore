@@ -1,6 +1,14 @@
 .venv/
 __pycache__/
 *.pyc
-.DS_Store
-inventory.db
+.env
+.env.*
+!.env.example
 *.db
+instance/
+uploads/
+.pytest_cache/
+.DS_Store
+
+instance/private_payments/
+verify_yours_mart.db

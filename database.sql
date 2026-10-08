@@ -1,30 +1,97 @@
--- Run this in SQL Server Management Studio 2022 (New Query -> Execute)
-CREATE DATABASE InventoryDB;
-GO
-USE InventoryDB;
-GO
+-- Yours Mart production schema (PostgreSQL 15+).
+-- Local development uses the same logical model through the Flask bootstrapper.
 
-CREATE TABLE Products (
-    ProductID INT IDENTITY(1,1) PRIMARY KEY,
-    Name      NVARCHAR(100) NOT NULL,
-    Category  NVARCHAR(50)  NOT NULL,
-    Price     DECIMAL(10,2) NOT NULL,
-    Stock     INT           NOT NULL DEFAULT 0,
-    Emoji     NVARCHAR(10)  NOT NULL DEFAULT N'📦'
+CREATE TABLE IF NOT EXISTS users (
+  id BIGSERIAL PRIMARY KEY, full_name VARCHAR(120) NOT NULL, email VARCHAR(180) UNIQUE NOT NULL,
+  username VARCHAR(80) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL,
+  role VARCHAR(20) NOT NULL DEFAULT 'customer', is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-GO
+CREATE TABLE IF NOT EXISTS admins (
+  id BIGSERIAL PRIMARY KEY, username VARCHAR(80) UNIQUE NOT NULL, email VARCHAR(180) UNIQUE NOT NULL,
+  full_name VARCHAR(120) NOT NULL, password_hash VARCHAR(255) NOT NULL,
+  role VARCHAR(20) NOT NULL DEFAULT 'admin', is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS admin_permissions (
+  id BIGSERIAL PRIMARY KEY, admin_id BIGINT NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+  permission VARCHAR(80) NOT NULL, UNIQUE(admin_id,permission)
+);
+CREATE TABLE IF NOT EXISTS categories (
+  id BIGSERIAL PRIMARY KEY, name VARCHAR(120) UNIQUE NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS products (
+  id BIGSERIAL PRIMARY KEY, name VARCHAR(180) NOT NULL, slug VARCHAR(220) UNIQUE NOT NULL,
+  brand VARCHAR(120), category VARCHAR(120) NOT NULL, description TEXT,
+  price NUMERIC(12,2) NOT NULL CHECK(price>0), original_price NUMERIC(12,2),
+  discount NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK(discount BETWEEN 0 AND 100),
+  stock INTEGER NOT NULL DEFAULT 0 CHECK(stock>=0), min_stock INTEGER NOT NULL DEFAULT 5 CHECK(min_stock>=0),
+  sizes TEXT, colors TEXT, rating NUMERIC(3,2) NOT NULL DEFAULT 0 CHECK(rating BETWEEN 0 AND 5),
+  review_count INTEGER NOT NULL DEFAULT 0, tags TEXT, image_url TEXT NOT NULL, additional_images TEXT,
+  status VARCHAR(20) NOT NULL DEFAULT 'active', featured BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS cart_items (
+  id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT, quantity INTEGER NOT NULL CHECK(quantity>0),
+  size VARCHAR(30), color VARCHAR(50), UNIQUE(user_id,product_id,size,color)
+);
+CREATE TABLE IF NOT EXISTS wishlist (
+  id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT, UNIQUE(user_id,product_id)
+);
+CREATE TABLE IF NOT EXISTS addresses (
+  id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  full_name VARCHAR(120), phone VARCHAR(40), province VARCHAR(80), area VARCHAR(120),
+  address TEXT, city VARCHAR(80), postal_code VARCHAR(30), instructions TEXT, is_default BOOLEAN DEFAULT FALSE
+);
+CREATE TABLE IF NOT EXISTS orders (
+  id BIGSERIAL PRIMARY KEY, order_number VARCHAR(40) UNIQUE NOT NULL,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  subtotal NUMERIC(12,2) NOT NULL DEFAULT 0, discount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  shipping_fee NUMERIC(12,2) NOT NULL DEFAULT 0, total NUMERIC(12,2) NOT NULL CHECK(total>=0),
+  shipping_address TEXT NOT NULL, payment_method VARCHAR(40) NOT NULL DEFAULT 'COD',
+  payment_status VARCHAR(40) NOT NULL DEFAULT 'Pending', status VARCHAR(40) NOT NULL DEFAULT 'Pending Payment',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS order_items (
+  id BIGSERIAL PRIMARY KEY, order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT, quantity INTEGER NOT NULL CHECK(quantity>0),
+  price NUMERIC(12,2) NOT NULL CHECK(price>=0), size VARCHAR(30), color VARCHAR(50)
+);
+CREATE TABLE IF NOT EXISTS payments (
+  id BIGSERIAL PRIMARY KEY, order_id BIGINT UNIQUE NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  method VARCHAR(40) NOT NULL, amount NUMERIC(12,2) NOT NULL, transaction_ref VARCHAR(120),
+  proof_path TEXT, status VARCHAR(40) NOT NULL DEFAULT 'Pending Verification', rejection_reason TEXT,
+  verified_by BIGINT REFERENCES admins(id) ON DELETE SET NULL, verified_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS inventory_transactions (
+  id BIGSERIAL PRIMARY KEY, product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+  admin_id BIGINT REFERENCES admins(id) ON DELETE SET NULL, change_qty INTEGER NOT NULL,
+  stock_after INTEGER NOT NULL, reason VARCHAR(160), created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS reviews (
+  id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT, order_id BIGINT REFERENCES orders(id) ON DELETE SET NULL,
+  rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5), body TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS tryon_history (
+  id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  product_id BIGINT NOT NULL REFERENCES products(id) ON DELETE RESTRICT, job_id VARCHAR(255),
+  status VARCHAR(40), result_url TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGSERIAL PRIMARY KEY, admin_id BIGINT REFERENCES admins(id) ON DELETE SET NULL,
+  action VARCHAR(120) NOT NULL, target_type VARCHAR(60), target_id VARCHAR(80), details TEXT,
+  ip_address VARCHAR(80), created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
-INSERT INTO Products (Name, Category, Price, Stock, Emoji) VALUES
-(N'Wireless Earbuds Pro',   N'Electronics', 4999,  35, N'🎧'),
-(N'Smart Watch Series 5',   N'Electronics', 8999,  12, N'⌚'),
-(N'Bluetooth Speaker',      N'Electronics', 3499,  4,  N'🔊'),
-(N'Gaming Mouse RGB',       N'Electronics', 2799,  50, N'🖱️'),
-(N'Men Running Shoes',      N'Fashion',     5499,  22, N'👟'),
-(N'Leather Wallet',         N'Fashion',     1299,  60, N'👛'),
-(N'Women Handbag',          N'Fashion',     3999,  3,  N'👜'),
-(N'Sunglasses UV400',       N'Fashion',     999,   40, N'🕶️'),
-(N'Non-Stick Fry Pan',      N'Home',        1899,  18, N'🍳'),
-(N'Table Lamp LED',         N'Home',        1499,  27, N'💡'),
-(N'Cotton Bedsheet Set',    N'Home',        2999,  9,  N'🛏️'),
-(N'Water Bottle 1L',        N'Home',        599,   100,N'🍶');
-GO
+CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
+CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
+CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders(user_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_inventory_product_created ON inventory_transactions(product_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
