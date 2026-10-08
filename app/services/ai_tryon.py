@@ -12,7 +12,7 @@ def generate_virtual_tryon(user_image, clothing_image):
     url = os.getenv("AI_API_URL", "https://api.fashn.ai").rstrip("/")
     model = os.getenv("AI_MODEL", "tryon-max")
     if not key:
-        return {"mode": "mock", "status": "mock", "message": "AI_API_KEY is not configured."}
+        return {"mode": "unavailable", "status": "unavailable", "message": "AI Try-On is not configured. Add AI_API_KEY to enable live generation."}
     if isinstance(user_image, tuple):
         raw, mime = user_image
         model_image = _data_uri(raw, mime)
