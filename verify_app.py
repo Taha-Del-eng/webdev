@@ -23,7 +23,7 @@ os.environ.pop("AI_API_KEY",None)
 os.environ.pop("AI_ASSISTANT_API_KEY",None)
 
 from app import app
-from app.main import one
+from app.main import one, engine
 app.config.update(TESTING=True)
 
 client=app.test_client()
@@ -96,6 +96,17 @@ assert payment["method"]=="Easypaisa" and payment["status"]=="Pending Verificati
 # Customer cannot access admin or superadmin.
 assert client.get("/admin").status_code in (302,403)
 assert client.get("/superadmin").status_code in (302,403)
+# Disabled customers cannot authenticate.
+from app.main import engine
+from sqlalchemy import text
+with engine.begin() as c:
+    c.execute(text("UPDATE users SET is_active=0 WHERE id=:u"),{"u":uid})
+client=app.test_client()
+token=csrf("/login")
+disabled_login=client.post("/login",data={"_csrf":token,"username":"verify_user","password":"strong-password-123"})
+assert disabled_login.status_code==200
+with engine.begin() as c:
+    c.execute(text("UPDATE users SET is_active=1 WHERE id=:u"),{"u":uid})
 
 # Customer IDOR protection.
 other=client.get(f"/orders/{order_id+1}")
@@ -129,6 +140,7 @@ assert assistant.status_code==200
 assert all("name" in p and "price" in p and "slug" in p for p in assistant.json["products"])
 
 print("Yours Mart production smoke verification passed.")
+engine.dispose()
 try:
     DB_PATH.unlink()
 except FileNotFoundError:

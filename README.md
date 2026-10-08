@@ -30,7 +30,7 @@ Yours Mart is a Flask-based AI fashion marketplace rebuilt from the original Fla
 10. Open http://localhost:5000.
 
 ## AI Virtual Try-On
-Default provider: FASHN.
+Default provider: FASHN (or another compatible provider configured through the environment).
 AI_API_URL=https://api.fashn.ai
 AI_MODEL=tryon-max
 AI_API_KEY=server-side-key
@@ -58,7 +58,7 @@ vercel
 vercel --prod
 
 ## Git workflow
-The implementation is on feature/yours-mart-ai-marketplace for review before merging into main.
+The production-ready implementation is maintained on main. Feature work should use short-lived branches and pull requests.
 
 ## Security
 Never commit .env files, API keys, admin passwords, customer photos or private generated assets. Use HTTPS, strong secrets, PostgreSQL and cloud storage in production.

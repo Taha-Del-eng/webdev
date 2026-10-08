@@ -201,7 +201,7 @@ def context():
     count=0
     if session.get("user_id"):
         count=one("SELECT COALESCE(SUM(quantity),0) n FROM cart_items WHERE user_id=:u",{"u":session["user_id"]})["n"]
-    return {"cart_count":count,"current_user":one("SELECT id,full_name,username FROM users WHERE id=:u",{"u":session.get("user_id")}) if session.get("user_id") else None}
+    return {"cart_count":count,"current_user":one("SELECT id,full_name,username FROM users WHERE id=:u",{"u":session.get("user_id")}) if session.get("user_id") else None,"admin_session":bool(session.get("admin_id"))}
 
 def login_required(f):
     @wraps(f)
@@ -345,7 +345,7 @@ def signup():
 @app.route("/login",methods=["GET","POST"])
 def login():
     if request.method=="POST":
-        u=one("SELECT * FROM users WHERE username=:u OR email=:u",{"u":request.form.get("username","").strip()})
+        u=one("SELECT * FROM users WHERE (username=:u OR email=:u) AND is_active=1",{"u":request.form.get("username","").strip()})
         if u and check_password_hash(u["password_hash"],request.form.get("password","")):
             session.clear(); session["user_id"]=u["id"]; return redirect(url_for("shop"))
         return render_template("auth.html",mode="login",error="Invalid username/email or password.")
@@ -467,7 +467,7 @@ def checkout():
                 if upd.rowcount!=1:raise RuntimeError(f"Stock changed for {i['name']}. Please retry.")
                 c.execute(text("INSERT INTO order_items(order_id,product_id,quantity,price,size,color) VALUES(:o,:p,:q,:pr,:s,:c)"),{"o":oid,"p":i["product_id"],"q":i["quantity"],"pr":i["price"],"s":i.get("size"),"c":i.get("color")})
             c.execute(text("INSERT INTO addresses(user_id,full_name,phone,province,area,address,city,postal_code,instructions,is_default) VALUES(:u,:n,:ph,:pv,:ar,:a,:c,:pc,:i,0)"),{"u":session["user_id"],"n":fields["full_name"],"ph":fields["phone"],"pv":fields["province"],"ar":fields["area"],"a":fields["address"],"c":fields["city"],"pc":fields["postal_code"],"i":fields["instructions"]})
-            c.execute(text("INSERT INTO payments(order_id,method,amount,transaction_ref,proof_path,status) VALUES(:o,:m,:a,:r,:p,:s)"),{"o":oid,"m":"Easypaisa" if method=="easypaisa" else "COD","a":total,"r":txref or None,"p":proof_path,"s":payment_status})
+            c.execute(text("INSERT INTO payments(order_id,method,amount,transaction_ref,proof_path,status) VALUES(:o,:m,:a,:r,:p,:s)"),{"o":oid,"m":"Easypaisa","a":total,"r":txref or None,"p":proof_path,"s":payment_status})
             c.execute(text("DELETE FROM cart_items WHERE user_id=:u"),{"u":session["user_id"]})
         return redirect(url_for("order_detail",oid=oid))
     return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,payment_account=account,payment_account_name=account_name)
@@ -507,6 +507,8 @@ def edit_address(aid):
     f=request.form
     fields={k:f.get(k,"").strip() for k in ("full_name","phone","province","area","address","city","postal_code","instructions")}
     if not all(fields[k] for k in ("full_name","phone","province","area","address","city")): abort(400,"Please complete all required address fields.")
+    if any(len(fields[k])>limit for k,limit in {"full_name":120,"phone":40,"province":80,"area":120,"address":2000,"city":80,"postal_code":30,"instructions":500}.items()):
+        abort(400,"One or more address fields are too long.")
     with engine.begin() as c:
         c.execute(text("""UPDATE addresses SET full_name=:n,phone=:ph,province=:pv,area=:ar,address=:a,city=:c,postal_code=:pc,instructions=:i
                           WHERE id=:id AND user_id=:u"""),
@@ -738,8 +740,27 @@ def admin_order(oid):
     if status not in allowed:abort(400)
     o=one("SELECT * FROM orders WHERE id=:o",{"o":oid})
     if not o:abort(404)
-    if status=="Delivered" and o["payment_method"]=="Easypaisa" and o["payment_status"]!="Verified":abort(400,"Payment must be verified before delivery.")
-    exec_sql("UPDATE orders SET status=:s,updated_at=CURRENT_TIMESTAMP WHERE id=:o",{"s":status,"o":oid});admin_audit("order_status_changed","order",oid,status);return redirect(url_for("admin"))
+    current=o["status"]
+    transitions={
+        "Pending Payment":{"Payment Verification","Cancelled"},
+        "Payment Verification":{"Confirmed","Cancelled"},
+        "Confirmed":{"Processing","Cancelled"},
+        "Processing":{"Packed","Cancelled"},
+        "Packed":{"Shipped"},
+        "Shipped":{"Out for Delivery","Returned"},
+        "Out for Delivery":{"Delivered","Returned"},
+        "Delivered":{"Returned"},
+        "Returned":{"Refunded"},
+        "Cancelled":set(),
+        "Refunded":set(),
+    }
+    if status==current or status not in transitions.get(current,set()):
+        abort(400,"Invalid order status transition.")
+    if status in {"Confirmed","Processing","Packed","Shipped","Out for Delivery","Delivered"} and o["payment_status"]!="Verified":
+        abort(400,"Payment must be verified before fulfillment.")
+    exec_sql("UPDATE orders SET status=:s,updated_at=CURRENT_TIMESTAMP WHERE id=:o",{"s":status,"o":oid})
+    admin_audit("order_status_changed","order",oid,status)
+    return redirect(url_for("admin"))
 
 @app.post("/admin/payment/<int:payment_id>")
 @admin_required("manage_payments")
