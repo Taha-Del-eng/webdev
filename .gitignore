@@ -9,3 +9,6 @@ instance/
 uploads/
 .pytest_cache/
 .DS_Store
+
+instance/private_payments/
+verify_yours_mart.db
