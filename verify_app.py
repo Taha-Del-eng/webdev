@@ -1,6 +1,8 @@
 import os
 import re
 from pathlib import Path
+from io import BytesIO
+from PIL import Image
 from werkzeug.security import generate_password_hash
 
 DB_PATH=Path("verify_yours_mart.db")
@@ -78,7 +80,7 @@ assert bad_variant.status_code==400
 checkout=client.get("/checkout")
 assert checkout.status_code==200
 token=csrf("/checkout")
-placed=client.post("/checkout",data={"_csrf":token,"full_name":"Verify User","phone":"03001234567","province":"Sindh","area":"Gulshan","address":"1 Verification Street","city":"Karachi","postal_code":"74000","instructions":"","payment_method":"cod"})
+placed=client.post("/checkout",data={"_csrf":token,"full_name":"Verify User","phone":"03001234567","province":"Sindh","area":"Gulshan","address":"1 Verification Street","city":"Karachi","postal_code":"74000","instructions":"","payment_method":"easypaisa","transaction_ref":"VERIFY-12345","payment_proof":(BytesIO(__import__("base64").b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")),"proof.png")})
 assert placed.status_code==302
 order_page=client.get(placed.location)
 assert order_page.status_code==200
@@ -89,7 +91,7 @@ product=one("SELECT stock FROM products WHERE id=1")
 assert int(product["stock"])==36
 assert int(one("SELECT COUNT(*) n FROM orders WHERE user_id=:u",{"u":uid})["n"])==1
 payment=one("SELECT method,status FROM payments ORDER BY id DESC LIMIT 1")
-assert payment["method"]=="COD" and payment["status"]=="Pending"
+assert payment["method"]=="Easypaisa" and payment["status"]=="Pending Verification"
 
 # Customer cannot access admin or superadmin.
 assert client.get("/admin").status_code in (302,403)
