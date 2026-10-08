@@ -389,26 +389,28 @@ def tryon_status(job_id):
 def assistant():
     query=request.json.get("message","").strip() if request.is_json else request.form.get("message","").strip()
     if not query:return jsonify(error="Ask me about products, outfits, budgets, colours or sizes."),400
-    words=re.findall(r"[a-z0-9]+",query.lower()); budget=None
+    words=re.findall(r"[a-z0-9]+",query.lower())
+    stopwords={"a","an","and","for","in","is","it","me","my","of","on","or","the","to","under","with","show","find","want","need","please","outfit","look"}
+    keywords=[w for w in words if len(w)>2 and w not in stopwords]
+    budget=None
     m=re.search(r"(?:under|below|less than)\s*(?:rs\.?\s*)?([0-9,]+)",query.lower())
     if m: budget=float(m.group(1).replace(",",""))
-    cond=[]; params={}
-    if budget is not None:cond.append("price<=:b");params["b"]=budget
-    for w in words:
-        if len(w)>2:cond.append("(LOWER(name) LIKE :w OR LOWER(brand) LIKE :w OR LOWER(category) LIKE :w OR LOWER(tags) LIKE :w OR LOWER(colors) LIKE :w)")
-    if cond and budget is None: 
-        # use OR across catalog keywords
-        cond=cond[-len(words):] if words else cond
-    if words:
-        likeparams={f"w{i}":f"%{w}%" for i,w in enumerate(words) if len(w)>2}
-        clauses=[] 
-        for i,w in enumerate(words):
-            if len(w)>2: clauses.append(f"(LOWER(name) LIKE :w{i} OR LOWER(brand) LIKE :w{i} OR LOWER(category) LIKE :w{i} OR LOWER(tags) LIKE :w{i} OR LOWER(colors) LIKE :w{i})")
-        sql="SELECT * FROM products WHERE "+(" AND ".join(clauses) if clauses else "1=1")
-        if budget is not None:sql+=" AND price<=:b"
-        sql+=" ORDER BY rating DESC LIMIT 6"; params.update(likeparams)
-    else:sql="SELECT * FROM products ORDER BY rating DESC LIMIT 6"
-    matches=[product_dict(x) for x in rows(sql,params)]
+    params={}
+    clauses=[]
+    for idx,w in enumerate(keywords):
+        clauses.append(f"(LOWER(name) LIKE :w{idx} OR LOWER(brand) LIKE :w{idx} OR LOWER(category) LIKE :w{idx} OR LOWER(tags) LIKE :w{idx} OR LOWER(colors) LIKE :w{idx})")
+        params[f"w{idx}"]=f"%{w}%"
+    sql="SELECT * FROM products"
+    if clauses: sql+=" WHERE ("+" OR ".join(clauses)+")"
+    if budget is not None: sql+=(" AND " if clauses else " WHERE ")+"price<=:b"; params["b"]=budget
+    sql+=" ORDER BY rating DESC LIMIT 20"
+    candidates=[product_dict(x) for x in rows(sql,params)]
+    def relevance(p):
+        hay=" ".join([str(p.get("name") or ""),str(p.get("brand") or ""),str(p.get("category") or ""),str(p.get("tags") or ""),str(p.get("colors") or "")]).lower()
+        hits=sum(1 for w in keywords if w in hay)
+        return (hits,float(p.get("rating") or 0))
+    candidates.sort(key=relevance,reverse=True)
+    matches=candidates[:6]
     if not matches: matches=product_query(limit=6)
     total=sum(float(x["price"]) for x in matches[:3])
     # Optional LLM layer: the model only receives live catalog matches, so it cannot invent unavailable products.
