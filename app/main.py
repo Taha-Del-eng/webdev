@@ -382,9 +382,10 @@ def wishlist():
 @app.post("/wishlist/toggle/<int:pid>")
 @login_required
 def toggle_wishlist(pid):
+    if not one("SELECT id FROM products WHERE id=:p AND status='active'",{"p":pid}): abort(404)
     exists=one("SELECT id FROM wishlist WHERE user_id=:u AND product_id=:p",{"u":session["user_id"],"p":pid})
     with engine.begin() as c:
-        if exists:c.execute(text("DELETE FROM wishlist WHERE id=:i"),{"i":exists["id"]})
+        if exists:c.execute(text("DELETE FROM wishlist WHERE id=:i AND user_id=:u"),{"i":exists["id"],"u":session["user_id"]})
         else:c.execute(text("INSERT INTO wishlist(user_id,product_id) VALUES(:u,:p)"),{"u":session["user_id"],"p":pid})
     return redirect(url_for("shop"))
 
@@ -395,7 +396,7 @@ def add_cart(pid):
     qty=parse_int(request.form.get("quantity",1),1,1,100)
     size=(request.form.get("size") or "").strip() or None
     color=(request.form.get("color") or "").strip() or None
-    if not p or p["stock"]<1: abort(400,"Product is out of stock.")
+    if not p or p.get("status")!="active" or int(p["stock"])<1: abort(400,"Product is unavailable or out of stock.")
     if size and size not in csv_values(p.get("sizes")): abort(400,"Invalid size for this product.")
     if color and color not in csv_values(p.get("colors")): abort(400,"Invalid colour for this product.")
     existing=one("SELECT * FROM cart_items WHERE user_id=:u AND product_id=:p AND COALESCE(size,'')=COALESCE(:s,'') AND COALESCE(color,'')=COALESCE(:c,'')",{"u":session["user_id"],"p":pid,"s":size,"c":color})
@@ -416,11 +417,12 @@ def cart():
 @login_required
 def update_cart(item_id):
     i=one("SELECT c.*,p.stock FROM cart_items c JOIN products p ON p.id=c.product_id WHERE c.id=:i AND c.user_id=:u",{"i":item_id,"u":session["user_id"]})
-    if i:
-        q=max(0,min(int(request.form.get("quantity",1)),i["stock"]))
-        with engine.begin() as c:
-            if q:c.execute(text("UPDATE cart_items SET quantity=:q WHERE id=:i"),{"q":q,"i":item_id})
-            else:c.execute(text("DELETE FROM cart_items WHERE id=:i"),{"i":item_id})
+    if not i: abort(404)
+    q=parse_int(request.form.get("quantity",1),1,0,100000)
+    q=min(q,int(i["stock"]))
+    with engine.begin() as c:
+        if q:c.execute(text("UPDATE cart_items SET quantity=:q WHERE id=:i AND user_id=:u"),{"q":q,"i":item_id,"u":session["user_id"]})
+        else:c.execute(text("DELETE FROM cart_items WHERE id=:i AND user_id=:u"),{"i":item_id,"u":session["user_id"]})
     return redirect(url_for("cart"))
 
 @app.post("/cart/remove/<int:item_id>")
@@ -547,11 +549,13 @@ def tryon_start(pid):
         img.verify()
     except (UnidentifiedImageError, OSError):
         return jsonify(error="The uploaded file is not a valid image."),400
-    result=generate_virtual_tryon((raw,f.mimetype),p["image_url"])
+    try:
+        result=generate_virtual_tryon((raw,f.mimetype),p["image_url"])
+    except TryOnError:
+        return jsonify(error="AI Try-On is temporarily unavailable. Please try again later."),503
+    if result.get("mode")=="unavailable":
+        return jsonify(error=result.get("message","AI Try-On is not configured yet.")),503
     with engine.begin() as c:
-        if result["mode"]=="mock":
-            c.execute(text("INSERT INTO tryon_history(user_id,product_id,status,result_url) VALUES(:u,:p,'mock',:r)"),{"u":session["user_id"],"p":pid,"r":p["image_url"]})
-            return jsonify(mode="mock",status="mock",output=p["image_url"],message="Live AI is not configured; showing a safe demo result.")
         r=c.execute(text("INSERT INTO tryon_history(user_id,product_id,job_id,status) VALUES(:u,:p,:j,'processing') RETURNING id"),{"u":session["user_id"],"p":pid,"j":result["job_id"]})
         hid=r.scalar_one()
     return jsonify(mode="live",status="processing",history_id=hid,job_id=result["job_id"])
@@ -595,7 +599,9 @@ def assistant():
         return (hits,float(p.get("rating") or 0))
     candidates.sort(key=relevance,reverse=True)
     matches=candidates[:6]
-    if not matches: matches=product_query(limit=6)
+    if not matches: matches=product_query("WHERE p.status='active'",limit=6)
+    if not matches:
+        return jsonify(reply="I couldn't find any active products right now. Please try again later.",products=[])
     total=sum(float(x["price"]) for x in matches[:3])
     # Optional LLM layer: the model only receives live catalog matches, so it cannot invent unavailable products.
     ak=os.getenv("AI_ASSISTANT_API_KEY"); au=os.getenv("AI_ASSISTANT_API_URL"); am=os.getenv("AI_ASSISTANT_MODEL")
