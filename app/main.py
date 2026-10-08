@@ -159,7 +159,9 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)",
             "CREATE INDEX IF NOT EXISTS idx_order_items_product ON order_items(product_id)",
             "CREATE INDEX IF NOT EXISTS idx_tryon_user_created ON tryon_history(user_id,created_at)",
-            "CREATE INDEX IF NOT EXISTS idx_tryon_job_user ON tryon_history(job_id,user_id)"
+            "CREATE INDEX IF NOT EXISTS idx_tryon_job_user ON tryon_history(job_id,user_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_order_number ON orders(order_number)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_transaction_ref ON payments(transaction_ref) WHERE transaction_ref IS NOT NULL"
         ]:
             c.execute(text(idx))
         admin=os.getenv("ADMIN_USERNAME")
@@ -451,6 +453,8 @@ def checkout():
         if method=="easypaisa" and (not proof or not proof.filename or not txref):
             return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="Easypaisa requires the transaction/reference number and payment screenshot.",payment_account=account,payment_account_name=account_name)
         if len(txref)>120:abort(400,"Transaction reference is too long.")
+        if one("SELECT id FROM payments WHERE transaction_ref=:r",{"r":txref}):
+            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="This transaction/reference number has already been submitted.",payment_account=account,payment_account_name=account_name)
         for i in items:
             if i["status"]!="active" or int(i["stock"])<int(i["quantity"]):
                 return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error=f"{i['name']} is no longer available in the requested quantity.",payment_account=account,payment_account_name=account_name)
@@ -767,8 +771,10 @@ def admin_order(oid):
 def admin_payment(payment_id):
     status=request.form.get("status","").strip();reason=request.form.get("reason","").strip()[:500]
     if status not in {"Verified","Rejected"}:abort(400)
-    p=one("SELECT * FROM payments WHERE id=:i",{"i":payment_id})
+    p=one("SELECT p.*,o.status AS order_status FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.id=:i",{"i":payment_id})
     if not p:abort(404)
+    if p["status"]!="Pending Verification":abort(400,"This payment has already been reviewed.")
+    if p["order_status"] in {"Cancelled","Refunded"}:abort(400,"Cancelled or refunded orders cannot be verified.")
     with engine.begin() as c:
         c.execute(text("UPDATE payments SET status=:s,rejection_reason=:r,verified_by=:v,verified_at=CURRENT_TIMESTAMP WHERE id=:i"),{"s":status,"r":reason or None,"v":session["admin_id"],"i":payment_id})
         c.execute(text("UPDATE orders SET payment_status=:ps,status=:os,updated_at=CURRENT_TIMESTAMP WHERE id=:o"),{"ps":status,"os":"Confirmed" if status=="Verified" else "Payment Verification","o":p["order_id"]})
