@@ -181,8 +181,12 @@ def home():
 def shop():
     q=request.args.get("q","").strip(); cat=request.args.get("category","").strip(); brand=request.args.get("brand","").strip()
     color=request.args.get("color","").strip(); size=request.args.get("size","").strip(); rating=request.args.get("rating","").strip()
-    minp=request.args.get("min",""); maxp=request.args.get("max",""); sort=request.args.get("sort","newest")
+    minp=request.args.get("min","").strip(); maxp=request.args.get("max","").strip(); sort=request.args.get("sort","newest")
     page=parse_int(request.args.get("page",1),1,1,100000); per=12
+    try: min_value=float(minp) if minp else None
+    except ValueError: min_value=None; minp=""
+    try: max_value=float(maxp) if maxp else None
+    except ValueError: max_value=None; maxp=""
     cond=[]; par={}
     if q: cond.append("(LOWER(p.name) LIKE LOWER(:q) OR LOWER(p.brand) LIKE LOWER(:q) OR LOWER(p.category) LIKE LOWER(:q) OR LOWER(p.description) LIKE LOWER(:q) OR LOWER(p.tags) LIKE LOWER(:q) OR LOWER(p.colors) LIKE LOWER(:q))"); par["q"]=f"%{q}%"
     if cat: cond.append("p.category=:cat"); par["cat"]=cat
@@ -190,8 +194,14 @@ def shop():
     if color: cond.append("LOWER(p.colors) LIKE LOWER(:color)"); par["color"]=f"%{color}%"
     if size: cond.append("p.sizes LIKE :size"); par["size"]=f"%{size}%"
     if rating: cond.append("p.rating>=:rating"); par["rating"]=float(rating)
-    if minp: cond.append("p.price>=:minp"); par["minp"]=float(minp)
-    if maxp: cond.append("p.price<=:maxp"); par["maxp"]=float(maxp)
+    if min_value is not None and min_value>=0: cond.append("p.price>=:minp"); par["minp"]=min_value
+    if max_value is not None and max_value>=0: cond.append("p.price<=:maxp"); par["maxp"]=max_value
+    if min_value is not None and max_value is not None and min_value>max_value:
+        min_value,max_value=max_value,min_value
+        minp,maxp=str(min_value),str(max_value)
+        cond=[c for c in cond if "p.price>=:minp" not in c and "p.price<=:maxp" not in c]
+        par["minp"],par["maxp"]=min_value,max_value
+        cond.extend(["p.price>=:minp","p.price<=:maxp"])
     where=("WHERE "+" AND ".join(cond)) if cond else ""
     order={"low":"p.price ASC","high":"p.price DESC","rating":"p.rating DESC","discount":"p.discount DESC","newest":"p.created_at DESC"}.get(sort,"p.created_at DESC")
     total=one(f"SELECT COUNT(*) n FROM products p {where}",par)["n"]
@@ -256,7 +266,7 @@ def toggle_wishlist(pid):
     with engine.begin() as c:
         if exists:c.execute(text("DELETE FROM wishlist WHERE id=:i"),{"i":exists["id"]})
         else:c.execute(text("INSERT INTO wishlist(user_id,product_id) VALUES(:u,:p)"),{"u":session["user_id"],"p":pid})
-    return redirect(request.referrer or url_for("shop"))
+    return redirect(url_for("shop"))
 
 @app.post("/cart/add/<int:pid>")
 @login_required
@@ -273,7 +283,7 @@ def add_cart(pid):
         if existing:
             newq=min(p["stock"],existing["quantity"]+qty); c.execute(text("UPDATE cart_items SET quantity=:q WHERE id=:i"),{"q":newq,"i":existing["id"]})
         else:c.execute(text("INSERT INTO cart_items(user_id,product_id,quantity,size,color) VALUES(:u,:p,:q,:s,:c)"),{"u":session["user_id"],"p":pid,"q":min(qty,p["stock"]),"s":size,"c":color})
-    return redirect(request.referrer or url_for("cart"))
+    return redirect(url_for("cart"))
 
 @app.get("/cart")
 @login_required
