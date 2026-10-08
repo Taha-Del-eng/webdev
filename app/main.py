@@ -313,9 +313,9 @@ def checkout():
             return render_template("checkout.html",items=items,total=total,subtotal=subtotal,shipping=shipping,error="One or more delivery fields are too long.")
         with engine.begin() as c:
             for i in items:
-                updated=c.execute(text("UPDATE products SET stock=stock-:q,updated_at=CURRENT_TIMESTAMP WHERE id=:p AND stock>=:q"),{"q":i["quantity"],"p":i["product_id"]})
-                if updated.rowcount != 1:
-                    raise ValueError(f"Not enough stock for {i['name']}.")
+                updated=c.execute(text("UPDATE products SET stock=stock-:q,updated_at=CURRENT_TIMESTAMP WHERE id=:p AND stock>=:q RETURNING id"),{"q":i["quantity"],"p":i["product_id"]})
+                if not updated.first():
+                    abort(409,f"Not enough stock for {i['name']}.")
             r=c.execute(text("INSERT INTO orders(user_id,total,shipping_address,payment_method,payment_status,status) VALUES(:u,:t,:a,'COD','Pending','Pending') RETURNING id"),{"u":session["user_id"],"t=total,"a":json.dumps(fields)})
             oid=r.scalar_one()
             c.execute(text("INSERT INTO addresses(user_id,full_name,phone,address,city,postal_code,instructions) VALUES(:u,:n,:ph,:a,:c,:pc,:i)"),{"u":session["user_id"],"n":fields["full_name"],"ph":fields["phone"],"a":fields["address"],"c":fields["city"],"pc":fields["postal_code"],"i":fields["instructions"]})
