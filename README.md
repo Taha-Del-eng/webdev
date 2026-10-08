@@ -10,7 +10,7 @@ Yours Mart is a Flask-based AI fashion marketplace rebuilt from the original Fla
 - Password hashing, secure sessions and CSRF protection.
 - Cash-on-Delivery checkout with stock validation and real orders/order-items.
 - Customer account, orders and wishlist.
-- Admin product/category/order management plus sales/customer/stock metrics.
+- Separate customer/admin/superadmin authentication, RBAC permissions, product/category/order management, inventory ledger, payment verification, customer management, audit logs, and sales/customer/stock metrics.
 - Catalog-grounded AI Fashion Assistant with optional LLM enhancement.
 - Real AI Virtual Try-On using FASHN Try-On Max when configured, with an explicit demo/mock fallback.
 - Optional Cloudinary image storage.
@@ -64,4 +64,4 @@ The implementation is on feature/yours-mart-ai-marketplace for review before mer
 Never commit .env files, API keys, admin passwords, customer photos or private generated assets. Use HTTPS, strong secrets, PostgreSQL and cloud storage in production.
 
 ## Payment
-Cash on Delivery is implemented. No card number or CVV is collected. The payment model can be extended later for Stripe or a local Pakistan provider.
+COD and manual Easypaisa verification are implemented. Customers can submit a transaction reference plus payment screenshot; admins verify or reject the proof before delivery. The configured account defaults to 03352935407 and is controlled through environment variables. No card number or CVV is collected.
