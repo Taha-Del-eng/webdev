@@ -1,7 +1,7 @@
 import os, json, math, re, secrets, uuid
 from datetime import datetime, timedelta
 from functools import wraps
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort, flash
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort, flash, send_file
 from sqlalchemy import create_engine, text, event
 from werkzeug.security import generate_password_hash, check_password_hash
 from PIL import Image, UnidentifiedImageError
@@ -165,8 +165,7 @@ def init_db():
         if admin and not c.execute(text("SELECT id FROM users WHERE username=:u"),{"u":admin}).first():
             pass
 
-try: init_db()
-except Exception as exc: print("Database initialization deferred:", exc)
+init_db()
 
 def rows(sql, params={}):
     with db() as c: return [dict(r._mapping) for r in c.execute(text(sql),params).fetchall()]
@@ -206,7 +205,11 @@ def context():
 def login_required(f):
     @wraps(f)
     def w(*a,**k):
-        if not session.get("user_id"): return redirect(url_for("login"))
+        uid=session.get("user_id")
+        if not uid: return redirect(url_for("login"))
+        if not one("SELECT id FROM users WHERE id=:u AND is_active=1",{"u":uid}):
+            session.clear()
+            return redirect(url_for("login"))
         return f(*a,**k)
     return w
 
@@ -729,8 +732,21 @@ def health():
     except Exception:
         return jsonify(status="degraded",database="unavailable",app="yours-mart"),503
 
+@app.errorhandler(400)
+def bad_request(e): return render_template("error.html",code=400,message=getattr(e,"description","The request could not be processed.") or "The request could not be processed."),400
+
+@app.errorhandler(401)
+def unauthorized(e): return render_template("error.html",code=401,message="You need to sign in to continue."),401
+
+@app.errorhandler(403)
+def forbidden(e): return render_template("error.html",code=403,message=getattr(e,"description","You do not have permission to access this resource.") or "You do not have permission to access this resource."),403
+
 @app.errorhandler(404)
 def not_found(e): return render_template("error.html",code=404,message="That page does not exist."),404
+
+@app.errorhandler(405)
+def method_not_allowed(e): return render_template("error.html",code=405,message="That action is not available here."),405
+
 @app.errorhandler(500)
 def server_error(e): return render_template("error.html",code=500,message="Something went wrong. Please try again."),500
 
