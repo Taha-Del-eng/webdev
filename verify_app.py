@@ -96,6 +96,17 @@ assert payment["method"]=="Easypaisa" and payment["status"]=="Pending Verificati
 # Customer cannot access admin or superadmin.
 assert client.get("/admin").status_code in (302,403)
 assert client.get("/superadmin").status_code in (302,403)
+# Disabled customers cannot authenticate.
+from app.main import engine
+from sqlalchemy import text
+with engine.begin() as c:
+    c.execute(text("UPDATE users SET is_active=0 WHERE id=:u"),{"u":uid})
+client=app.test_client()
+token=csrf("/login")
+disabled_login=client.post("/login",data={"_csrf":token,"username":"verify_user","password":"strong-password-123"})
+assert disabled_login.status_code==200
+with engine.begin() as c:
+    c.execute(text("UPDATE users SET is_active=1 WHERE id=:u"),{"u":uid})
 
 # Customer IDOR protection.
 other=client.get(f"/orders/{order_id+1}")
