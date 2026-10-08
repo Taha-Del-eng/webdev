@@ -684,10 +684,12 @@ def admin():
            "low":int(one("SELECT COUNT(*) n FROM products WHERE stock<=min_stock AND status='active'")["n"]),"out":int(one("SELECT COUNT(*) n FROM products WHERE stock=0 AND status='active'")["n"])}
     orders=rows("SELECT o.*,u.full_name,u.email FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at DESC LIMIT 30")
     products=product_query("WHERE p.status!='archived'",limit=100);cats=rows("SELECT * FROM categories ORDER BY name")
+    edit_id=parse_int(request.args.get("edit"),0,1) if request.args.get("edit") else 0
+    edit_product=product_dict(one("SELECT * FROM products WHERE id=:p",{"p":edit_id})) if edit_id else None
     payments=rows("SELECT p.*,o.order_number,u.full_name FROM payments p JOIN orders o ON o.id=p.order_id JOIN users u ON u.id=o.user_id ORDER BY p.created_at DESC LIMIT 30")
     chart_status=rows("SELECT status,COUNT(*) n FROM orders GROUP BY status")
     chart_categories=rows("SELECT p.category,SUM(oi.quantity*oi.price) sales FROM order_items oi JOIN products p ON p.id=oi.product_id GROUP BY p.category ORDER BY sales DESC LIMIT 8")
-    return render_template("admin.html",stats=stats,orders=orders,products=products,categories=cats,payments=payments,chart_status=chart_status,chart_categories=chart_categories,admin_role=session.get("admin_role"))
+    return render_template("admin.html",stats=stats,orders=orders,products=products,categories=cats,payments=payments,chart_status=chart_status,chart_categories=chart_categories,admin_role=session.get("admin_role"),edit_product=edit_product)
 
 @app.post("/admin/product")
 @admin_required("manage_products")
