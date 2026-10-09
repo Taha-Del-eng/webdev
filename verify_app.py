@@ -274,6 +274,24 @@ with engine.begin() as c:
 draft_assistant=client.post("/api/assistant",json={"message":"black shirt"},headers={"X-CSRFToken":token})
 assert draft_assistant.status_code==200
 assert all(p["slug"]!="hidden-draft-catalog-item" for p in draft_assistant.json["products"])
+# A mocked LLM response containing a fabricated product/price is rejected in favour of verified catalog text.
+import requests
+from unittest.mock import patch
+class _FakeLLMResponse:
+    ok=True
+    def json(self):
+        return {"choices":[{"message":{"content":"Buy Unicorn Jacket for Rs. 1; it is in stock."}}]}
+os.environ["AI_ASSISTANT_API_KEY"]="test-key"
+os.environ["AI_ASSISTANT_API_URL"]="https://example.invalid/v1/chat/completions"
+os.environ["AI_ASSISTANT_MODEL"]="test-model"
+token=csrf("/signup")
+with patch("requests.post",return_value=_FakeLLMResponse()):
+    guarded=client.post("/api/assistant",json={"message":"black shirt under 5000"},headers={"X-CSRFToken":token})
+assert guarded.status_code==200
+assert "Unicorn Jacket" not in guarded.json["reply"]
+assert "Rs. 1" not in guarded.json["reply"]
+for _key in ("AI_ASSISTANT_API_KEY","AI_ASSISTANT_API_URL","AI_ASSISTANT_MODEL"):
+    os.environ.pop(_key,None)
 with engine.begin() as c:
     c.execute(text("DELETE FROM products WHERE slug='hidden-draft-catalog-item'"))
 
