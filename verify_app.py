@@ -125,9 +125,9 @@ from app.main import engine
 from sqlalchemy import text
 with engine.begin() as c:
     c.execute(text("UPDATE users SET is_active=0 WHERE id=:u"),{"u":uid})
-client=app.test_client()
-token=csrf("/login")
-disabled_login=client.post("/login",data={"_csrf":token,"username":"verify_user","password":"strong-password-123"})
+disabled_client=app.test_client()
+token=csrf("/login",disabled_client)
+disabled_login=disabled_client.post("/login",data={"_csrf":token,"username":"verify_user","password":"strong-password-123"})
 assert disabled_login.status_code==200
 with engine.begin() as c:
     c.execute(text("UPDATE users SET is_active=1 WHERE id=:u"),{"u":uid})
