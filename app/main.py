@@ -374,7 +374,7 @@ def logout():
     return redirect(url_for("home"))
 
 @app.route("/admin-login",methods=["GET","POST"])
-@limiter.limit("5 per minute")
+@limiter.limit("5 per minute", methods=["POST"])
 def admin_login():
     if request.method=="POST":
         login_name=request.form.get("username","").strip()
@@ -463,7 +463,7 @@ def api_auth_signup():
     return jsonify(message="Account created successfully.",user=user,access_token=_issue_access_token(uid),refresh_token=_issue_refresh_token(uid),token_type="Bearer",expires_in=JWT_ACCESS_SECONDS),201
 
 @app.post("/api/auth/login")
-@limiter.limit("5 per minute")
+@limiter.limit("5 per minute", methods=["POST"])
 def api_auth_login():
     data=request.get_json(silent=True) or {}; identity=str(data.get("username",data.get("email",""))).strip()
     user=one("SELECT * FROM users WHERE username=:u OR email=:u",{"u":identity})
