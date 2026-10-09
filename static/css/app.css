@@ -15,3 +15,54 @@
 .store-cover{height:220px;margin:24px 5vw 0;overflow:hidden;border-radius:20px;background:#eee}
 .store-cover img{width:100%;height:100%;object-fit:cover}
 .store-logo{width:76px;height:76px;object-fit:cover;border-radius:18px;margin:0 0 12px;border:1px solid var(--line)}
+
+
+/* Accessibility and responsive marketplace polish */
+:focus-visible{outline:3px solid #637300;outline-offset:3px}
+button:disabled{opacity:.62;cursor:not-allowed}
+img{max-width:100%}
+input,select,textarea{min-width:0}
+.product-card{transition:transform .16s ease,box-shadow .16s ease}
+.product-card:hover{transform:translateY(-3px);box-shadow:0 12px 30px rgba(16,16,16,.07)}
+.product-card img{display:block}
+.filters label,.checkout-form label,.admin-form label{line-height:1.45}
+.empty h2{font-family:'Space Grotesk',sans-serif}
+@media(max-width:900px){
+  .nav{gap:14px}
+  .nav nav{flex-wrap:wrap;justify-content:flex-end}
+  .shop-layout{gap:18px}
+  .pdp{gap:28px}
+  .cart-layout,.checkout,.tryon{gap:20px}
+  .order-tracking{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:650px){
+  .nav{align-items:center;gap:12px}
+  .logo{font-size:15px}
+  .logo span{width:28px;height:28px;margin-right:5px}
+  .nav nav{width:100%;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:0;font-size:12px}
+  .nav nav a,.nav nav button{padding:5px 0}
+  .section{padding:38px 5vw}
+  .category-strip,.ai-banner{margin:18px 5vw;padding:24px}
+  .section h2,.category-strip h2{font-size:28px}
+  .grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .image-wrap{height:auto;aspect-ratio:3/4}
+  .pc-body{padding:11px}
+  .pc-name{font-size:14px}
+  .pc-actions{gap:6px}
+  .btn{padding:11px 13px}
+  .shop-head,.admin-head{padding:40px 5vw 24px}
+  .filters{padding:14px}
+  .cart-layout,.checkout,.account,.admin-grid,.tryon{padding:28px 5vw}
+  .cart-item{align-items:flex-start}
+  .cart-item img{width:66px;height:78px}
+  .stats{padding:0 5vw 24px;gap:8px}
+  .stats div{padding:12px}
+  .stats b{font-size:20px}
+  .admin-order{align-items:flex-start;flex-wrap:wrap}
+  .order-tracking{margin:0 5vw 25px;gap:7px}
+  .track-step{padding:10px;font-size:12px}
+  footer{padding:35px 5vw;gap:20px}
+}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}
+}
