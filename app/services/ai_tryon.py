@@ -1,7 +1,7 @@
 """Safe adapter for real virtual try-on providers.
 
 Local inference is intentionally not advertised as available until a compatible,
-commercially permitted model and weights are explicitly installed. No fake result
+commercially permitted local model and weights are explicitly installed. No fake result
 or silent paid-provider fallback is ever returned.
 """
 import base64
@@ -19,6 +19,11 @@ ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 REQUEST_TIMEOUT = (5, 45)
 STATUS_TIMEOUT = (5, 20)
+LOCAL_UNAVAILABLE = (
+    "Local AI Try-On is not installed. This computer does not currently have a "
+    "verified, commercially permitted local model and weights. No image was "
+    "generated. Configure an approved provider or install a compatible model integration."
+)
 
 
 def _data_uri(raw: bytes, mime: str) -> str:
@@ -31,21 +36,11 @@ def _data_uri(raw: bytes, mime: str) -> str:
 
 def _provider_config():
     backend = os.getenv("AI_TRYON_BACKEND", "provider").strip().lower()
-    if backend == "local":
-        raise TryOnError(
-            "Local AI Try-On is not installed. This computer does not currently "
-            "have a verified, commercially permitted local model and weights. "
-            "No image was generated; configure an approved provider or install "
-            "a compatible model integration."
-        )
     if backend != "provider":
         raise TryOnError("AI Try-On backend configuration is invalid.")
     key = os.getenv("AI_API_KEY", "").strip()
     if not key:
-        raise TryOnError(
-            "AI Try-On is unavailable because no provider API key is configured. "
-            "No image was generated."
-        )
+        raise TryOnError("AI Try-On provider API key is not configured.")
     url = os.getenv("AI_API_URL", "https://api.fashn.ai").strip().rstrip("/")
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.netloc:
@@ -58,6 +53,18 @@ def _provider_config():
 
 def generate_virtual_tryon(user_image, clothing_image):
     """Submit a genuine provider job. Returns a job ID, never a fabricated image."""
+    backend = os.getenv("AI_TRYON_BACKEND", "provider").strip().lower()
+    if backend == "local":
+        return {"mode": "unavailable", "status": "unavailable", "message": LOCAL_UNAVAILABLE}
+    if backend != "provider":
+        raise TryOnError("AI Try-On backend configuration is invalid.")
+    if not os.getenv("AI_API_KEY", "").strip():
+        return {
+            "mode": "unavailable",
+            "status": "unavailable",
+            "message": "AI Try-On is not configured. Set AI_API_KEY for the external provider. No image was generated.",
+        }
+
     key, url, model = _provider_config()
     if isinstance(user_image, tuple):
         raw, mime = user_image
@@ -86,7 +93,6 @@ def generate_virtual_tryon(user_image, clothing_image):
             timeout=REQUEST_TIMEOUT,
         )
         if response.status_code >= 400:
-            # Never forward provider response bodies, which may contain sensitive details.
             raise TryOnError(f"AI provider request failed (HTTP {response.status_code}).")
         data = response.json()
     except requests.Timeout as exc:
