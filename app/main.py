@@ -1105,7 +1105,8 @@ def superadmin_create_admin():
         with engine.begin() as c:
             c.execute(text("INSERT INTO admins(username,email,full_name,password_hash,role) VALUES(:u,:e,:n,:p,:r)"),{"u":username,"e":email,"n":name[:120],"p":generate_password_hash(pwd),"r":role})
             aid=c.execute(text("SELECT id FROM admins WHERE username=:u"),{"u":username}).scalar()
-            for perm in ADMIN_PERMISSIONS:c.execute(text("INSERT INTO admin_permissions(admin_id,permission) VALUES(:a,:p)"),{"a":aid,"p":perm})
+            granted_permissions=ADMIN_PERMISSIONS if role=="superadmin" else ADMIN_PERMISSIONS-{"manage_settings"}
+            for perm in granted_permissions:c.execute(text("INSERT INTO admin_permissions(admin_id,permission) VALUES(:a,:p)"),{"a":aid,"p":perm})
     except Exception:abort(400,"Username or email is already in use.")
     admin_audit("admin_created","admin",aid,username);return redirect(url_for("superadmin"))
 
