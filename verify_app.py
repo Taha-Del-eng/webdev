@@ -101,6 +101,18 @@ assert int(one("SELECT COUNT(*) n FROM orders WHERE user_id=:u",{"u":uid})["n"])
 payment=one("SELECT method,status FROM payments ORDER BY id DESC LIMIT 1")
 assert payment["method"]=="Easypaisa" and payment["status"]=="Pending Verification"
 
+# Transaction references are checked case-insensitively, including legacy lowercase values.
+before_duplicate_orders=int(one("SELECT COUNT(*) n FROM orders")["n"])
+token=csrf("/shop")
+assert client.post("/cart/add/1",data={"_csrf":token,"quantity":"1","size":"M","color":"Black"}).status_code==302
+token=csrf("/checkout")
+duplicate_case=client.post("/checkout",data={"_csrf":token,"full_name":"Verify User","phone":"03001234567","province":"Sindh","area":"Gulshan","address":"1 Verification Street","city":"Karachi","payment_method":"easypaisa","transaction_ref":"verify-12345","payment_proof":(BytesIO(__import__("base64").b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")),"duplicate.png")})
+assert duplicate_case.status_code==200
+assert "already been submitted" in duplicate_case.get_data(as_text=True)
+assert int(one("SELECT COUNT(*) n FROM orders")["n"])==before_duplicate_orders
+with engine.begin() as c:
+    c.execute(text("DELETE FROM cart_items WHERE user_id=:u"),{"u":uid})
+
 # Customer cannot access admin or superadmin.
 assert client.get("/admin").status_code in (302,403)
 assert client.get("/superadmin").status_code in (302,403)
@@ -120,6 +132,9 @@ assert owner_client.post("/vendor/product",data={"_csrf":token,"name":"Vendor Te
 vendor_product=one("SELECT * FROM products WHERE name='Vendor Test Product'")
 assert vendor_product and vendor_product["store_id"]==store["id"]
 assert owner_client.get(f"/stores/{store['slug']}").status_code==200
+# Vendor ownership checks reject attempts to edit platform-owned products.
+token=csrf("/vendor",owner_client)
+assert owner_client.post("/vendor/product",data={"_csrf":token,"id":"1","name":"Hijacked Product","price":"1","stock":"99"}).status_code==404
 # Mixed-store checkout is rejected instead of creating an incorrectly fulfilled order.
 token=csrf("/shop",owner_client)
 assert owner_client.post("/cart/add/1",data={"_csrf":token,"quantity":"1","size":"M","color":"Black"}).status_code==302
@@ -156,6 +171,18 @@ other_order_id=int(placed2.location.rsplit("/",1)[-1])
 assert client.get(f"/orders/{order_id}").status_code==200
 assert client.get(f"/orders/{other_order_id}").status_code==404
 assert client2.get(f"/orders/{other_order_id}").status_code==200
+# Payment proofs are private and a customer cannot fetch the admin review endpoint.
+payment_id=int(one("SELECT id FROM payments WHERE order_id=:o",{"o":other_order_id})["id"])
+assert client2.get(f"/admin/payment-proof/{payment_id}").status_code==302
+# Cancellation restores stock exactly once and cannot be replayed to inflate inventory.
+stock_before_cancel=int(one("SELECT stock FROM products WHERE id=1")["stock"])
+token=csrf(f"/orders/{other_order_id}",client2)
+assert client2.post(f"/orders/{other_order_id}/cancel",data={"_csrf":token}).status_code==302
+stock_after_cancel=int(one("SELECT stock FROM products WHERE id=1")["stock"])
+assert stock_after_cancel==stock_before_cancel+1
+token=csrf(f"/orders/{other_order_id}",client2)
+assert client2.post(f"/orders/{other_order_id}/cancel",data={"_csrf":token}).status_code==400
+assert int(one("SELECT stock FROM products WHERE id=1")["stock"])==stock_after_cancel
 
 # Wishlist.
 token=csrf()
@@ -168,6 +195,22 @@ token=csrf("/admin-login")
 admin_login=client.post("/admin-login",data={"_csrf":token,"username":"verify_admin","password":"AdminPass123!"})
 assert admin_login.status_code==302
 assert client.get("/admin").status_code==200
+# Payment review is an atomic one-time transition; a second reviewer cannot overwrite it.
+first_payment=one("SELECT id,order_id FROM payments WHERE transaction_ref='VERIFY-12345'")
+token=csrf("/admin",client)
+reviewed=client.post(f"/admin/payment/{first_payment['id']}",data={"_csrf":token,"status":"Verified","reason":"Smoke-test review"})
+assert reviewed.status_code==302
+assert one("SELECT status FROM payments WHERE id=:p",{"p":first_payment["id"]})["status"]=="Verified"
+assert one("SELECT payment_status,status FROM orders WHERE id=:o",{"o":first_payment["order_id"]})["payment_status"]=="Verified"
+token=csrf("/admin",client)
+review_again=client.post(f"/admin/payment/{first_payment['id']}",data={"_csrf":token,"status":"Rejected","reason":"Must not overwrite"})
+assert review_again.status_code==400
+# Inventory adjustments are atomic and cannot make stock negative.
+stock_before_invalid=int(one("SELECT stock FROM products WHERE id=1")["stock"])
+token=csrf("/admin",client)
+invalid_inventory=client.post("/admin/inventory/1",data={"_csrf":token,"change":"-999999","reason":"negative stock test"})
+assert invalid_inventory.status_code==400
+assert int(one("SELECT stock FROM products WHERE id=1")["stock"])==stock_before_invalid
 assert client.get("/superadmin").status_code in (302,403)
 
 # Superadmin login.
@@ -199,6 +242,16 @@ token=csrf("/signup")  # only to establish a session/CSRF; signup page is public
 assistant=client.post("/api/assistant",json={"message":"black shirt under 5000"},headers={"X-CSRFToken":token})
 assert assistant.status_code==200
 assert all("name" in p and "price" in p and "slug" in p for p in assistant.json["products"])
+# Draft/archived products must not leak into catalog assistant results.
+with engine.begin() as c:
+    c.execute(text("""INSERT INTO products(name,slug,brand,category,description,price,original_price,discount,stock,sizes,colors,rating,review_count,tags,image_url,status,featured)
+        VALUES('Hidden Draft Catalog Item','hidden-draft-catalog-item','Private','Other / Accessories','draft only',1,1,0,1,'One Size','Black',5,1,'black shirt',:img,'draft',0)"""),
+        {"img":"https://example.com/draft.jpg"})
+draft_assistant=client.post("/api/assistant",json={"message":"black shirt"},headers={"X-CSRFToken":token})
+assert draft_assistant.status_code==200
+assert all(p["slug"]!="hidden-draft-catalog-item" for p in draft_assistant.json["products"])
+with engine.begin() as c:
+    c.execute(text("DELETE FROM products WHERE slug='hidden-draft-catalog-item'"))
 
 print("Yours Mart production smoke verification passed.")
 engine.dispose()

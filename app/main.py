@@ -770,7 +770,7 @@ def cancel_order(oid):
     uid=session["user_id"]
     with engine.begin() as c:
         changed=c.execute(text("""UPDATE orders SET status='Cancelled',updated_at=CURRENT_TIMESTAMP
-            WHERE id=:o AND user_id=:u AND status IN ('Pending Payment','Payment Verification','Confirmed')
+            WHERE id=:o AND user_id=:u AND status IN ('Pending Payment','Payment Verification')
             RETURNING id"""),{"o":oid,"u":uid}).first()
         if not changed:
             exists=c.execute(text("SELECT id FROM orders WHERE id=:o AND user_id=:u"),{"o":oid,"u":uid}).first()
