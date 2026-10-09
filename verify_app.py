@@ -125,7 +125,7 @@ token=csrf("/shop",owner_client)
 assert owner_client.post("/cart/add/1",data={"_csrf":token,"quantity":"1","size":"M","color":"Black"}).status_code==302
 token=csrf("/shop",owner_client)
 assert owner_client.post(f"/cart/add/{vendor_product['id']}",data={"_csrf":token,"quantity":"1","size":"S","color":"Black"}).status_code==302
-mixed_checkout=owner_client.get("/checkout")
+mixed_checkout=owner_client.get("/checkout",follow_redirects=True)
 assert mixed_checkout.status_code==200
 assert "different stores" in mixed_checkout.get_data(as_text=True)
 # Disabled customers cannot authenticate.
