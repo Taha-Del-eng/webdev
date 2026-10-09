@@ -50,6 +50,22 @@ Without these variables, the assistant still recommends actual products from the
 ## Cloud images
 For production uploads configure CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.
 
+## JWT API and vendor stores
+
+The server-rendered website uses its CSRF-protected session cookie. Programmatic clients can use the separate Bearer-token API:
+- `GET /api/auth/csrf` returns a CSRF token for JSON POST requests.
+- `POST /api/auth/signup` accepts `full_name`, `email`, `username`, and `password`.
+- `POST /api/auth/login` accepts `username` or `email`, plus `password`.
+- `POST /api/auth/refresh` rotates a refresh token and revokes its predecessor.
+- `POST /api/auth/logout` revokes a refresh token.
+- `GET /api/v1/me` and `GET /api/v1/orders` require `Authorization: Bearer <access_token>`.
+
+Set `JWT_SECRET_KEY` to a strong random secret in production. Access tokens default to 15 minutes (maximum one hour); refresh tokens default to 14 days (maximum 30 days). JSON POST requests must include `X-CSRFToken` from `/api/auth/csrf`.
+
+Customers can apply for one store at `POST /stores/apply` and manage it at `/vendor`. Store applications require platform approval. Approved owners can add/edit products, manage fulfillment for paid store-only orders, and use the public `/stores/<slug>` storefront. Mixed-store checkout is blocked until split orders are supported.
+
+Login and API signup endpoints have per-IP rate limits. The default `memory://` backend is suitable for local development only; configure `RATELIMIT_STORAGE_URI` with a shared Redis URL for multi-worker production deployments.
+
 ## Vercel
 Configure production environment variables in Vercel. The entrypoint is api/index.py and vercel.json routes requests to it. Use PostgreSQL for production rather than SQLite.
 
