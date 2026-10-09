@@ -575,7 +575,8 @@ def checkout():
     items=rows("SELECT c.*,p.name,p.price,p.stock,p.status,p.image_url,p.store_id FROM cart_items c JOIN products p ON p.id=c.product_id WHERE c.user_id=:u",{"u":session["user_id"]})
     if not items:return redirect(url_for("cart"))
     if len({i.get("store_id") for i in items}) > 1:
-        return render_template("cart.html", items=items, error="Your bag contains products from different stores. Please place separate orders for each store.")
+        flash("Your bag contains products from different stores. Please place separate orders for each store.")
+        return redirect(url_for("cart"))
     subtotal=sum(float(i["price"])*int(i["quantity"]) for i in items)
     shipping=0 if subtotal>=5000 else 250
     total=subtotal+shipping
