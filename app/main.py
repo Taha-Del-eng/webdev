@@ -768,7 +768,13 @@ def tryon_status(job_id):
         with engine.begin() as c:c.execute(text("UPDATE tryon_history SET status='completed',result_url=:r WHERE job_id=:j AND user_id=:u"),{"r":r.get("output"),"j":job_id,"u":session["user_id"]})
     elif r.get("status")=="failed":
         with engine.begin() as c:c.execute(text("UPDATE tryon_history SET status='failed' WHERE job_id=:j AND user_id=:u"),{"j":job_id,"u":session["user_id"]})
-    return jsonify(r)
+    if r.get("status")=="completed":
+        output=r.get("output")
+        if not isinstance(output,str) or urlparse(output).scheme!="https":
+            with engine.begin() as c:c.execute(text("UPDATE tryon_history SET status='failed' WHERE job_id=:j AND user_id=:u"),{"j":job_id,"u":session["user_id"]})
+            return jsonify(status="failed",error="The AI provider returned an invalid image link."),502
+        return jsonify(status="completed",output=output)
+    return jsonify(status=r.get("status"),error=r.get("error"))
 
 @app.post("/api/assistant")
 def assistant():
