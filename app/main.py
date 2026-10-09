@@ -582,6 +582,9 @@ def checkout():
                   FROM cart_items c JOIN products p ON p.id=c.product_id
                   WHERE c.user_id=:u ORDER BY c.id""",{"u":uid})
     if not items:return redirect(url_for("cart"))
+    if len({i.get("store_id") for i in items})>1:
+        flash("Your bag contains products from different stores. Please place separate orders for each store.")
+        return redirect(url_for("cart"))
 
     def render_checkout(error=None,current_items=None):
         current_items=items if current_items is None else current_items
