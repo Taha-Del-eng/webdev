@@ -5,6 +5,7 @@ from pathlib import Path
 from io import BytesIO
 from PIL import Image
 from werkzeug.security import generate_password_hash
+from sqlalchemy import text
 
 _VERIFY_TEMP = tempfile.TemporaryDirectory(prefix="yours-mart-verify-")
 DB_PATH = Path(_VERIFY_TEMP.name) / "verify_yours_mart.db"
