@@ -105,8 +105,11 @@ assert payment["method"]=="Easypaisa" and payment["status"]=="Pending Verificati
 assert client.get("/admin").status_code in (302,403)
 assert client.get("/superadmin").status_code in (302,403)
 
-token=csrf("/admin")
-approved=client.post(f"/admin/store/{store['id']}/status",data={"_csrf":token,"status":"approved"})
+admin_client=app.test_client()
+token=csrf("/admin-login",admin_client)
+assert admin_client.post("/admin-login",data={"_csrf":token,"username":"verify_admin","password":"AdminPass123!"}).status_code==302
+token=csrf("/admin",admin_client)
+approved=admin_client.post(f"/admin/store/{store['id']}/status",data={"_csrf":token,"status":"approved"})
 assert approved.status_code==302
 assert one("SELECT status FROM stores WHERE id=:s",{"s":store["id"]})["status"]=="approved"
 owner_client=app.test_client()
@@ -117,8 +120,6 @@ assert owner_client.post("/vendor/product",data={"_csrf":token,"name":"Vendor Te
 vendor_product=one("SELECT * FROM products WHERE name='Vendor Test Product'")
 assert vendor_product and vendor_product["store_id"]==store["id"]
 assert owner_client.get(f"/stores/{store['slug']}").status_code==200
-token=csrf("/vendor",client2)
-assert client2.post("/vendor/product",data={"_csrf":token,"name":"Unauthorized Product","price":"1000","stock":"1"}).status_code==403
 # Disabled customers cannot authenticate.
 from app.main import engine
 from sqlalchemy import text
@@ -136,6 +137,8 @@ client2=app.test_client()
 token=csrf("/signup",client2)
 signup2=client2.post("/signup",data={"_csrf":token,"full_name":"Second Verify User","email":"verify2@example.com","username":"verify_user_2","password":"strong-password-456"})
 assert signup2.status_code==302
+token=csrf("/vendor",client2)
+assert client2.post("/vendor/product",data={"_csrf":token,"name":"Unauthorized Product","price":"1000","stock":"1"}).status_code==403
 token=csrf("/shop",client2)
 assert client2.post("/cart/add/1",data={"_csrf":token,"quantity":"1","size":"M","color":"Black"}).status_code==302
 token=csrf("/checkout",client2)
