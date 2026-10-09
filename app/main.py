@@ -95,7 +95,7 @@ def valid_email(value):
 def init_db():
     ddl=[
     """CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, full_name VARCHAR(120) NOT NULL, email VARCHAR(180) UNIQUE NOT NULL, username VARCHAR(80) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
-    """CREATE TABLE IF NOT EXISTS stores(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT, name VARCHAR(120) NOT NULL, slug VARCHAR(140) UNIQUE NOT NULL, description TEXT, contact_email VARCHAR(180), contact_phone VARCHAR(40), status VARCHAR(24) NOT NULL DEFAULT 'pending_review', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS stores(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT, name VARCHAR(120) NOT NULL, slug VARCHAR(140) UNIQUE NOT NULL, description TEXT, contact_email VARCHAR(180), contact_phone VARCHAR(40), status VARCHAR(24) NOT NULL DEFAULT 'pending_review', logo_url TEXT, cover_url TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS store_memberships(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, role VARCHAR(24) NOT NULL DEFAULT 'owner', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(store_id,user_id))""",
     """CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name VARCHAR(120) UNIQUE NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name VARCHAR(180) NOT NULL, slug VARCHAR(220) UNIQUE NOT NULL, brand VARCHAR(120), category VARCHAR(120) NOT NULL, description TEXT, price NUMERIC(12,2) NOT NULL CHECK(price>0), original_price NUMERIC(12,2), discount NUMERIC(5,2) DEFAULT 0, stock INTEGER DEFAULT 0 CHECK(stock>=0), sizes TEXT, colors TEXT, rating NUMERIC(3,2) DEFAULT 0 CHECK(rating>=0 AND rating<=5), review_count INTEGER DEFAULT 0, tags TEXT, image_url TEXT NOT NULL, additional_images TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
@@ -130,7 +130,7 @@ def init_db():
             ("products","min_stock","INTEGER DEFAULT 5"),("products","status","VARCHAR(20) DEFAULT 'active'"),("products","featured","INTEGER DEFAULT 0"),
             ("orders","order_number","VARCHAR(40)"),("orders","subtotal","NUMERIC(12,2) DEFAULT 0"),("orders","discount","NUMERIC(12,2) DEFAULT 0"),("orders","shipping_fee","NUMERIC(12,2) DEFAULT 0"),("orders","updated_at","TIMESTAMP"),
             ("addresses","province","VARCHAR(80)"),("addresses","area","VARCHAR(120)"),("addresses","is_default","INTEGER DEFAULT 0"),
-            ("products","store_id","INTEGER REFERENCES stores(id) ON DELETE SET NULL"),
+            ("products","store_id","INTEGER REFERENCES stores(id) ON DELETE SET NULL"),("stores","logo_url","TEXT"),("stores","cover_url","TEXT"),
         ]
         for table,col,typ in migrations:
             try: c.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {typ}"))
@@ -1019,8 +1019,11 @@ def store_apply():
     if one("SELECT id FROM stores WHERE owner_user_id=:u",{"u":uid}): abort(400,"You already have a store application.")
     slug=re.sub(r"[^a-z0-9]+","-",name.lower()).strip("-")[:130] or f"store-{secrets.token_hex(4)}"
     if one("SELECT id FROM stores WHERE slug=:s",{"s":slug}): slug=f"{slug}-{secrets.token_hex(3)}"
+    logo_file=request.files.get("logo_file"); cover_file=request.files.get("cover_file")
+    logo_url=save_product_image(logo_file) if logo_file and logo_file.filename else None
+    cover_url=save_product_image(cover_file) if cover_file and cover_file.filename else None
     with engine.begin() as c:
-        sid=c.execute(text("INSERT INTO stores(owner_user_id,name,slug,description,contact_email,contact_phone,status) VALUES(:u,:n,:s,:d,:e,:p,'pending_review') RETURNING id"),{"u":uid,"n":name,"s":slug,"d":desc,"e":email or None,"p":phone or None}).scalar_one()
+        sid=c.execute(text("INSERT INTO stores(owner_user_id,name,slug,description,contact_email,contact_phone,status,logo_url,cover_url) VALUES(:u,:n,:s,:d,:e,:p,'pending_review',:logo,:cover) RETURNING id"),{"u":uid,"n":name,"s":slug,"d":desc,"e":email or None,"p":phone or None,"logo":logo_url,"cover":cover_url}).scalar_one()
         c.execute(text("INSERT INTO store_memberships(store_id,user_id,role) VALUES(:s,:u,'owner')"),{"s":sid,"u":uid})
     flash("Store application submitted. You can manage your store after platform approval.","success")
     return redirect(url_for("vendor_dashboard"))
