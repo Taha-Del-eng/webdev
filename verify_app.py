@@ -24,10 +24,23 @@ os.environ.pop("AI_API_KEY",None)
 os.environ.pop("AI_ASSISTANT_API_KEY",None)
 
 from app import app
-from app.main import one, engine
+from app.main import one, engine, should_seed_demo_data
 app.config.update(TESTING=True)
 
 client=app.test_client()
+
+# Demo catalog is automatic only for development unless explicitly enabled.
+_saved_env={k:os.environ.get(k) for k in ("APP_ENV","FLASK_ENV","VERCEL","SEED_DEMO_DATA")}
+os.environ["APP_ENV"]="production"
+os.environ.pop("FLASK_ENV",None); os.environ.pop("VERCEL",None); os.environ.pop("SEED_DEMO_DATA",None)
+assert should_seed_demo_data() is False
+os.environ["SEED_DEMO_DATA"]="true"
+assert should_seed_demo_data() is True
+os.environ["SEED_DEMO_DATA"]="false"
+assert should_seed_demo_data() is False
+for _key,_value in _saved_env.items():
+    if _value is None: os.environ.pop(_key,None)
+    else: os.environ[_key]=_value
 
 # Public pages and health.
 for path in ["/","/shop","/health","/login","/signup","/admin-login","/admin","/superadmin"]:

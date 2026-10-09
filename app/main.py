@@ -93,6 +93,16 @@ def csv_values(value):
 def valid_email(value):
     return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]{2,}", value or ""))
 
+def should_seed_demo_data():
+    override=os.getenv("SEED_DEMO_DATA")
+    if override is not None:
+        return override.strip().lower() in {"1","true","yes","on"}
+    production=(os.getenv("APP_ENV","").lower()=="production" or
+                os.getenv("FLASK_ENV","").lower()=="production" or
+                os.getenv("VERCEL")=="1")
+    return not production
+
+
 def init_db():
     ddl=[
     """CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, full_name VARCHAR(120) NOT NULL, email VARCHAR(180) UNIQUE NOT NULL, username VARCHAR(80) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
@@ -162,8 +172,9 @@ def init_db():
             c.execute(text("""INSERT INTO marketplace_settings(setting_key,setting_value) VALUES(:k,:v) ON CONFLICT DO NOTHING"""),
                       {"k":setting_key,"v":str(setting_value)})
         count=c.execute(text("SELECT COUNT(*) FROM products")).scalar()
-        if not count:
+        if not c.execute(text("SELECT COUNT(*) FROM categories")).scalar():
             for name in CATEGORIES: c.execute(text("INSERT INTO categories(name) VALUES(:n) ON CONFLICT DO NOTHING"),{"n":name})
+        if not count and should_seed_demo_data():
             for p in SEED:
                 slug=re.sub(r"[^a-z0-9]+","-",p[0].lower()).strip("-")
                 c.execute(text("""INSERT INTO products(name,slug,brand,category,description,price,original_price,discount,stock,sizes,colors,rating,review_count,tags,image_url,additional_images)
