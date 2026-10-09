@@ -9,6 +9,8 @@ from PIL import Image, UnidentifiedImageError
 from io import BytesIO
 from urllib.parse import urlparse
 import jwt
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 import cloudinary
 import cloudinary.uploader
@@ -30,6 +32,7 @@ if DATABASE_URL.startswith("sqlite"):
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 app=Flask(__name__, template_folder=os.path.join(BASE_DIR,"templates"), static_folder=os.path.join(BASE_DIR,"static"))
+limiter=Limiter(key_func=get_remote_address, app=app, default_limits=[], storage_uri=os.getenv("RATELIMIT_STORAGE_URI","memory://"))
 secret_key=os.getenv("SECRET_KEY")
 if not secret_key and (os.getenv("VERCEL")=="1" or os.getenv("FLASK_ENV")=="production"):
     raise RuntimeError("SECRET_KEY must be configured in production.")
@@ -355,6 +358,7 @@ def signup():
     return render_template("auth.html",mode="signup")
 
 @app.route("/login",methods=["GET","POST"])
+@limiter.limit("5 per minute")
 def login():
     if request.method=="POST":
         u=one("SELECT * FROM users WHERE (username=:u OR email=:u) AND is_active=1",{"u":request.form.get("username","").strip()})
@@ -370,6 +374,7 @@ def logout():
     return redirect(url_for("home"))
 
 @app.route("/admin-login",methods=["GET","POST"])
+@limiter.limit("5 per minute")
 def admin_login():
     if request.method=="POST":
         login_name=request.form.get("username","").strip()
@@ -440,6 +445,7 @@ def api_auth_csrf():
     return jsonify(csrf_token=csrf_token())
 
 @app.post("/api/auth/signup")
+@limiter.limit("5 per hour")
 def api_auth_signup():
     data=request.get_json(silent=True) or {}
     name=str(data.get("full_name","")).strip(); email=str(data.get("email","")).strip().lower()
@@ -457,6 +463,7 @@ def api_auth_signup():
     return jsonify(message="Account created successfully.",user=user,access_token=_issue_access_token(uid),refresh_token=_issue_refresh_token(uid),token_type="Bearer",expires_in=JWT_ACCESS_SECONDS),201
 
 @app.post("/api/auth/login")
+@limiter.limit("5 per minute")
 def api_auth_login():
     data=request.get_json(silent=True) or {}; identity=str(data.get("username",data.get("email",""))).strip()
     user=one("SELECT * FROM users WHERE username=:u OR email=:u",{"u":identity})
@@ -1152,6 +1159,13 @@ def not_found(e): return render_template("error.html",code=404,message="That pag
 
 @app.errorhandler(405)
 def method_not_allowed(e): return render_template("error.html",code=405,message="That action is not available here."),405
+
+@app.errorhandler(429)
+def rate_limited(e):
+    message="Too many attempts. Please wait a minute and try again."
+    if request.path.startswith("/api/"):
+        return jsonify(error=message),429
+    return render_template("error.html",code=429,message=message),429
 
 @app.errorhandler(500)
 def server_error(e): return render_template("error.html",code=500,message="Something went wrong. Please try again."),500
