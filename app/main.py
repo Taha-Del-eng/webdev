@@ -744,9 +744,17 @@ def tryon_start(pid):
     if not raw or len(raw)>8*1024*1024:return jsonify(error="Image must be between 1 byte and 8MB."),400
     try:
         img=Image.open(BytesIO(raw))
+        detected={"JPEG":"image/jpeg","PNG":"image/png","WEBP":"image/webp"}.get(img.format)
+        width,height=img.size
+        if detected!=f.mimetype:
+            return jsonify(error="The file contents do not match the declared image type."),400
+        if width<256 or height<256 or width>6000 or height>6000:
+            return jsonify(error="Use a photo between 256px and 6000px in each dimension."),400
+        if getattr(img,"is_animated",False):
+            return jsonify(error="Animated images are not supported."),400
         img.verify()
-    except (UnidentifiedImageError, OSError):
-        return jsonify(error="The uploaded file is not a valid image."),400
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        return jsonify(error="The uploaded file is not a valid or supported image."),400
     try:
         result=generate_virtual_tryon((raw,f.mimetype),p["image_url"])
     except TryOnError:
