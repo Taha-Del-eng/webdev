@@ -53,7 +53,7 @@
     {% endfor %}
     <hr>
     <div><span>Subtotal</span><b>Rs. {{ "{:,.0f}".format(subtotal) }}</b></div>
-    <div><span>Delivery</span><b>{{ 'Free' if shipping==0 else 'Rs. 250' }}</b></div>
+    <div><span>Delivery</span><b>{{ 'Free' if shipping==0 else ('Rs. ' ~ "{:,.0f}".format(shipping)) }}</b></div>
     <div class="total"><span>Total</span><b>Rs. {{ "{:,.0f}".format(total) }}</b></div>
   </aside>
 </div>

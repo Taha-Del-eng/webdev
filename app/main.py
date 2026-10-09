@@ -113,6 +113,7 @@ def init_db():
     ddl.extend([
     f"""CREATE TABLE IF NOT EXISTS api_refresh_tokens(id {iddef}, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, jti_hash VARCHAR(64) UNIQUE NOT NULL, expires_at TIMESTAMP NOT NULL, revoked_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     f"""CREATE TABLE IF NOT EXISTS admins(id {iddef}, username VARCHAR(80) UNIQUE NOT NULL, email VARCHAR(180) UNIQUE NOT NULL, full_name VARCHAR(120) NOT NULL, password_hash VARCHAR(255) NOT NULL, role VARCHAR(20) NOT NULL DEFAULT 'admin', is_active INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS marketplace_settings(setting_key VARCHAR(80) PRIMARY KEY, setting_value TEXT NOT NULL, updated_by BIGINT REFERENCES admins(id) ON DELETE SET NULL, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     f"""CREATE TABLE IF NOT EXISTS admin_permissions(id {iddef}, admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE, permission VARCHAR(80) NOT NULL, UNIQUE(admin_id,permission))""",
     f"""CREATE TABLE IF NOT EXISTS payments(id {iddef}, order_id INTEGER UNIQUE NOT NULL REFERENCES orders(id) ON DELETE CASCADE, method VARCHAR(40) NOT NULL, amount NUMERIC(12,2) NOT NULL, transaction_ref VARCHAR(120), proof_path TEXT, status VARCHAR(40) NOT NULL DEFAULT 'Pending Verification', rejection_reason TEXT, verified_by INTEGER REFERENCES admins(id) ON DELETE SET NULL, verified_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     f"""CREATE TABLE IF NOT EXISTS inventory_transactions(id {iddef}, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, admin_id INTEGER REFERENCES admins(id) ON DELETE SET NULL, change_qty INTEGER NOT NULL, stock_after INTEGER NOT NULL, reason VARCHAR(160), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
@@ -151,6 +152,15 @@ def init_db():
             for perm in perms:
                 try:c.execute(text("INSERT INTO admin_permissions(admin_id,permission) VALUES(:a,:p)"),{"a":a[0],"p":perm})
                 except Exception:pass
+        defaults={
+            "payment_account":os.getenv("PAYMENT_ACCOUNT") or "03352935407",
+            "payment_account_name":os.getenv("PAYMENT_ACCOUNT_NAME") or "Yours Mart",
+            "shipping_fee":os.getenv("SHIPPING_FEE") or "250",
+            "free_shipping_threshold":os.getenv("FREE_SHIPPING_THRESHOLD") or "5000",
+        }
+        for setting_key,setting_value in defaults.items():
+            c.execute(text("""INSERT INTO marketplace_settings(setting_key,setting_value) VALUES(:k,:v) ON CONFLICT DO NOTHING"""),
+                      {"k":setting_key,"v":str(setting_value)})
         count=c.execute(text("SELECT COUNT(*) FROM products")).scalar()
         if not count:
             for name in CATEGORIES: c.execute(text("INSERT INTO categories(name) VALUES(:n) ON CONFLICT DO NOTHING"),{"n":name})
@@ -190,6 +200,10 @@ def one(sql,params={}):
     with db() as c:
         r=c.execute(text(sql),params).first()
         return dict(r._mapping) if r else None
+
+def marketplace_setting(key,default=""):
+    value=one("SELECT setting_value FROM marketplace_settings WHERE setting_key=:k",{"k":key})
+    return value["setting_value"] if value else default
 
 def csrf_token():
     if "csrf" not in session: session["csrf"]=secrets.token_urlsafe(24)
@@ -575,8 +589,10 @@ def remove_cart(item_id):
 @login_required
 def checkout():
     uid=session["user_id"]
-    account=os.getenv("PAYMENT_ACCOUNT","03352935407")
-    account_name=os.getenv("PAYMENT_ACCOUNT_NAME","Yours Mart")
+    account=marketplace_setting("payment_account",os.getenv("PAYMENT_ACCOUNT","03352935407"))
+    account_name=marketplace_setting("payment_account_name",os.getenv("PAYMENT_ACCOUNT_NAME","Yours Mart"))
+    shipping_fee=parse_money(marketplace_setting("shipping_fee","250"),250,0,100000)
+    free_shipping_threshold=parse_money(marketplace_setting("free_shipping_threshold","5000"),5000,0,1000000000)
     saved_addresses=rows("SELECT * FROM addresses WHERE user_id=:u ORDER BY is_default DESC,id DESC",{"u":uid})
     items=rows("""SELECT c.*,p.name,p.price,p.stock,p.status,p.image_url,p.store_id
                   FROM cart_items c JOIN products p ON p.id=c.product_id
@@ -589,7 +605,7 @@ def checkout():
     def render_checkout(error=None,current_items=None):
         current_items=items if current_items is None else current_items
         subtotal=round(sum(float(i["price"])*int(i["quantity"]) for i in current_items),2)
-        shipping=0 if subtotal>=5000 else 250
+        shipping=0 if subtotal>=free_shipping_threshold else shipping_fee
         return render_template("checkout.html",items=current_items,subtotal=subtotal,
             discount=0,shipping=shipping,total=round(subtotal+shipping,2),error=error,
             payment_account=account,payment_account_name=account_name,saved_addresses=saved_addresses)
@@ -639,7 +655,7 @@ def checkout():
             if duplicate:
                 return render_checkout("This transaction/reference number has already been submitted.",fresh_items)
             subtotal=round(sum(float(i["price"])*int(i["quantity"]) for i in fresh_items),2)
-            shipping=0 if subtotal>=5000 else 250
+            shipping=0 if subtotal>=free_shipping_threshold else shipping_fee
             total=round(subtotal+shipping,2)
             proof_path=save_private_payment_proof(proof)
             order_number=f"YM-{secrets.token_hex(4).upper()}"
@@ -1094,7 +1110,41 @@ def admin_customer_toggle(uid):
 def superadmin():
     admins=rows("SELECT id,username,email,full_name,role,is_active,created_at FROM admins ORDER BY created_at DESC")
     logs=rows("SELECT l.*,a.username FROM audit_logs l LEFT JOIN admins a ON a.id=l.admin_id ORDER BY l.created_at DESC LIMIT 50")
-    return render_template("superadmin.html",admins=admins,logs=logs,permissions=sorted(ADMIN_PERMISSIONS))
+    settings={r["setting_key"]:r["setting_value"] for r in rows("SELECT setting_key,setting_value FROM marketplace_settings")}
+    admin_permissions_map={}
+    for r in rows("SELECT admin_id,permission FROM admin_permissions"):
+        admin_permissions_map.setdefault(r["admin_id"],[]).append(r["permission"])
+    return render_template("superadmin.html",admins=admins,logs=logs,permissions=sorted(ADMIN_PERMISSIONS),
+        settings=settings,admin_permissions_map=admin_permissions_map)
+
+@app.post("/superadmin/settings")
+@admin_required(superadmin=True)
+def superadmin_settings():
+    account=request.form.get("payment_account","").strip()
+    account_name=request.form.get("payment_account_name","").strip()
+    fee_raw=request.form.get("shipping_fee","").strip()
+    threshold_raw=request.form.get("free_shipping_threshold","").strip()
+    if not re.fullmatch(r"03\d{9}",account):
+        abort(400,"Enter a valid 11-digit Pakistani Easypaisa mobile number.")
+    if not account_name or len(account_name)>120:
+        abort(400,"Enter a payment account name up to 120 characters.")
+    if not re.fullmatch(r"\d{1,6}(?:\.\d{1,2})?",fee_raw) or not re.fullmatch(r"\d{1,10}(?:\.\d{1,2})?",threshold_raw):
+        abort(400,"Enter valid numeric shipping amounts.")
+    fee=float(fee_raw); threshold=float(threshold_raw)
+    if not math.isfinite(fee) or not math.isfinite(threshold) or fee>100000 or threshold>1000000000:
+        abort(400,"Shipping settings exceed allowed limits.")
+    values={"payment_account":account,"payment_account_name":account_name,
+            "shipping_fee":f"{fee:.2f}","free_shipping_threshold":f"{threshold:.2f}"}
+    with engine.begin() as c:
+        for key,value in values.items():
+            c.execute(text("""INSERT INTO marketplace_settings(setting_key,setting_value,updated_by,updated_at)
+                VALUES(:k,:v,:a,CURRENT_TIMESTAMP)
+                ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value,
+                    updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP"""),
+                {"k":key,"v":value,"a":session["admin_id"]})
+    admin_audit("marketplace_settings_updated","settings",None,"Payment destination and shipping rules updated")
+    flash("Marketplace settings saved.","success")
+    return redirect(url_for("superadmin"))
 
 @app.post("/superadmin/admin")
 @admin_required(superadmin=True)

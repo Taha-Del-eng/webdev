@@ -243,6 +243,17 @@ token=csrf("/admin-login")
 super_login=client.post("/admin-login",data={"_csrf":token,"username":"verify_super","password":"SuperPass123!"})
 assert super_login.status_code==302
 assert client.get("/superadmin").status_code==200
+# Superadmin can update marketplace settings; invalid payment destinations are rejected.
+settings_html=client.get("/superadmin").get_data(as_text=True)
+assert 'name="payment_account"' in settings_html
+token=csrf("/superadmin",client)
+settings_saved=client.post("/superadmin/settings",data={"_csrf":token,"payment_account":"03352935407","payment_account_name":"Yours Mart","shipping_fee":"300","free_shipping_threshold":"6000"})
+assert settings_saved.status_code==302
+assert one("SELECT setting_value FROM marketplace_settings WHERE setting_key='shipping_fee'")["setting_value"]=="300.00"
+assert one("SELECT setting_value FROM marketplace_settings WHERE setting_key='free_shipping_threshold'")["setting_value"]=="6000.00"
+token=csrf("/superadmin",client)
+bad_settings=client.post("/superadmin/settings",data={"_csrf":token,"payment_account":"not-a-number","payment_account_name":"Yours Mart","shipping_fee":"250","free_shipping_threshold":"5000"})
+assert bad_settings.status_code==400
 
 # Superadmin-created standard admins must not receive settings permission by default.
 token=csrf("/superadmin",client)
@@ -270,6 +281,8 @@ token=csrf("/admin",limited_client)
 assert limited_client.post("/admin/product",data={"_csrf":token,"name":"No Permission","category":"Other","price":"10","stock":"1"}).status_code==403
 assert limited_client.post(f"/admin/payment/{first_payment['id']}",data={"_csrf":token,"status":"Verified"}).status_code==403
 assert limited_client.get(f"/admin/payment-proof/{first_payment['id']}").status_code==403
+token=csrf("/admin",limited_client)
+assert limited_client.post("/superadmin/settings",data={"_csrf":token,"payment_account":"03352935407","payment_account_name":"Yours Mart","shipping_fee":"250","free_shipping_threshold":"5000"}).status_code==403
 
 # JWT API token protection, refresh rotation, replay rejection and logout.
 api_client=app.test_client()

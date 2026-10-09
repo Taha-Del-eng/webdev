@@ -1,1 +1,41 @@
-{% extends "base.html" %}{% block title %}Superadmin — Yours Mart{% endblock %}{% block content %}<section class="admin-head"><span class="eyebrow">SUPERADMIN</span><h1>Platform administration.</h1><a class="btn" href="/admin">Back to admin</a></section><div class="admin-grid"><section class="panel"><h2>Create admin</h2><form class="admin-form" method="post" action="/superadmin/admin"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input name="full_name" placeholder="Full name" required><input name="username" placeholder="Username" required><input name="email" type="email" placeholder="Email" required><input name="password" type="password" minlength="12" placeholder="Temporary password" required><select name="role"><option value="admin">Admin</option><option value="superadmin">Superadmin</option></select><button class="btn dark">Create account</button></form></section><section class="panel"><h2>Admin accounts</h2>{% for a in admins %}<div class="admin-order"><div><b>{{ a.username }} · {{ a.role }}</b><span>{{ a.full_name }} · {{ a.email }} · {{ 'Active' if a.is_active else 'Disabled' }}</span></div><form method="post" action="/superadmin/admin/{{ a.id }}/toggle"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="btn small">{{ 'Disable' if a.is_active else 'Enable' }}</button></form></div><form method="post" action="/superadmin/admin/{{ a.id }}/permissions" class="permissions"><input type="hidden" name="_csrf" value="{{ csrf_token() }}">{% for p in permissions %}<label><input type="checkbox" name="permissions" value="{{ p }}"> {{ p }}</label>{% endfor %}<button class="btn small">Save permissions</button></form>{% endfor %}</section></div><section class="panel" style="margin:0 5vw 60px"><h2>Audit log</h2>{% for l in logs %}<div class="admin-order"><div><b>{{ l.action }}</b><span>{{ l.username or 'System' }} · {{ l.target_type }} {{ l.target_id or '' }} · {{ l.created_at }}</span><small>{{ l.details or '' }}</small></div></div>{% endfor %}</section>{% endblock %}
+{% extends "base.html" %}
+{% block title %}Superadmin — Yours Mart{% endblock %}
+{% block content %}
+<section class="admin-head"><span class="eyebrow">SUPERADMIN</span><h1>Platform administration.</h1><a class="btn" href="/admin">Back to admin</a></section>
+<section class="panel" style="margin:24px 5vw;padding:24px">
+  <h2>Marketplace settings</h2>
+  <p>Changes apply to future checkouts. Easypaisa transfers are still reviewed manually; changing the destination does not verify a payment.</p>
+  <form class="admin-form" method="post" action="/superadmin/settings">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <label>Easypaisa / bank transfer number<input name="payment_account" inputmode="numeric" pattern="03[0-9]{9}" maxlength="11" value="{{ settings.get('payment_account','03352935407') }}" required></label>
+    <label>Account display name<input name="payment_account_name" maxlength="120" value="{{ settings.get('payment_account_name','Yours Mart') }}" required></label>
+    <label>Delivery fee (PKR)<input name="shipping_fee" type="number" min="0" max="100000" step="0.01" value="{{ settings.get('shipping_fee','250') }}" required></label>
+    <label>Free delivery threshold (PKR)<input name="free_shipping_threshold" type="number" min="0" max="1000000000" step="0.01" value="{{ settings.get('free_shipping_threshold','5000') }}" required></label>
+    <button class="btn dark" type="submit">Save marketplace settings</button>
+  </form>
+</section>
+<div class="admin-grid">
+  <section class="panel"><h2>Create admin</h2><form class="admin-form" method="post" action="/superadmin/admin">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}"><input name="full_name" placeholder="Full name" required>
+    <input name="username" placeholder="Username" required><input name="email" type="email" placeholder="Email" required>
+    <input name="password" type="password" minlength="12" placeholder="Temporary password" required>
+    <select name="role"><option value="admin">Admin</option><option value="superadmin">Superadmin</option></select>
+    <button class="btn dark" type="submit">Create account</button>
+  </form></section>
+  <section class="panel"><h2>Admin accounts and permissions</h2>
+    {% for a in admins %}
+    <div class="admin-order"><div><b>{{ a.username }} · {{ a.role }}</b><span>{{ a.full_name }} · {{ a.email }} · {{ 'Active' if a.is_active else 'Disabled' }}</span></div>
+      {% if a.id != session.get('admin_id') %}<form method="post" action="/superadmin/admin/{{ a.id }}/toggle"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><button class="btn small" type="submit">{{ 'Disable' if a.is_active else 'Enable' }}</button></form>{% endif %}
+    </div>
+    <form method="post" action="/superadmin/admin/{{ a.id }}/permissions" class="permissions">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      {% for p in permissions %}<label><input type="checkbox" name="permissions" value="{{ p }}" {% if p in admin_permissions_map.get(a.id,[]) %}checked{% endif %}> {{ p }}</label>{% endfor %}
+      <button class="btn small" type="submit">Save permissions</button>
+    </form>
+    {% endfor %}
+  </section>
+</div>
+<section class="panel" style="margin:0 5vw 60px"><h2>Audit log</h2>
+  {% for l in logs %}<div class="admin-order"><div><b>{{ l.action }}</b><span>{{ l.username or 'System' }} · {{ l.target_type }} {{ l.target_id or '' }} · {{ l.created_at }}</span><small>{{ l.details or '' }}</small></div></div>{% else %}<div class="empty">No audit records yet.</div>{% endfor %}
+</section>
+{% endblock %}
