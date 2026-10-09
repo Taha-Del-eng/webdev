@@ -244,6 +244,27 @@ super_login=client.post("/admin-login",data={"_csrf":token,"username":"verify_su
 assert super_login.status_code==302
 assert client.get("/superadmin").status_code==200
 
+# A report-only administrator must not receive customer/payment/product management data or permissions.
+with engine.begin() as c:
+    limited_admin_id=c.execute(text("""INSERT INTO admins(username,email,full_name,password_hash,role)
+        VALUES('limited_admin','limited@example.com','Limited Admin',:p,'admin') RETURNING id"""),
+        {"p":generate_password_hash("LimitedAdminPass123!")}).scalar_one()
+    c.execute(text("INSERT INTO admin_permissions(admin_id,permission) VALUES(:a,'view_reports')"),{"a":limited_admin_id})
+limited_client=app.test_client()
+token=csrf("/admin-login",limited_client)
+assert limited_client.post("/admin-login",data={"_csrf":token,"username":"limited_admin","password":"LimitedAdminPass123!"}).status_code==302
+dashboard=limited_client.get("/admin")
+assert dashboard.status_code==200
+dashboard_html=dashboard.get_data(as_text=True)
+assert "Analytics" in dashboard_html
+assert "Payment verification" not in dashboard_html
+assert "Save product" not in dashboard_html
+assert "Customers" not in dashboard_html
+token=csrf("/admin",limited_client)
+assert limited_client.post("/admin/product",data={"_csrf":token,"name":"No Permission","category":"Other","price":"10","stock":"1"}).status_code==403
+assert limited_client.post(f"/admin/payment/{first_payment['id']}",data={"_csrf":token,"status":"Verified"}).status_code==403
+assert limited_client.get(f"/admin/payment-proof/{first_payment['id']}").status_code==403
+
 # JWT API token protection, refresh rotation, replay rejection and logout.
 api_client=app.test_client()
 api_token=api_client.get("/api/auth/csrf").json["csrf_token"]

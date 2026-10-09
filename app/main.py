@@ -916,20 +916,31 @@ ADMIN_PERMISSIONS={"manage_products","manage_orders","manage_inventory","manage_
 @app.get("/admin")
 @admin_required("view_reports")
 def admin():
+    admin_role=session.get("admin_role","admin")
+    admin_permissions=set(ADMIN_PERMISSIONS) if admin_role=="superadmin" else {
+        r["permission"] for r in rows("SELECT permission FROM admin_permissions WHERE admin_id=:a",{"a":session["admin_id"]})
+    }
     stats={"sales":float(one("SELECT COALESCE(SUM(total),0) n FROM orders WHERE status NOT IN ('Cancelled','Refunded') AND (payment_method='COD' OR payment_status IN ('Verified','Paid'))")["n"]),
            "orders":int(one("SELECT COUNT(*) n FROM orders")["n"]),"pending":int(one("SELECT COUNT(*) n FROM orders WHERE status IN ('Pending Payment','Payment Verification','Confirmed','Processing','Packed')")["n"]),
            "shipped":int(one("SELECT COUNT(*) n FROM orders WHERE status IN ('Shipped','Out for Delivery')")["n"]),"delivered":int(one("SELECT COUNT(*) n FROM orders WHERE status='Delivered'")["n"]),
            "customers":int(one("SELECT COUNT(*) n FROM users WHERE role='customer'")["n"]),"products":int(one("SELECT COUNT(*) n FROM products WHERE status!='archived'")["n"]),
            "low":int(one("SELECT COUNT(*) n FROM products WHERE stock<=min_stock AND status='active'")["n"]),"out":int(one("SELECT COUNT(*) n FROM products WHERE stock=0 AND status='active'")["n"])}
-    orders=rows("SELECT o.*,u.full_name,u.email FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at DESC LIMIT 30")
-    products=product_query("WHERE p.status!='archived'",limit=100);cats=rows("SELECT * FROM categories ORDER BY name")
-    edit_id=parse_int(request.args.get("edit"),0,1) if request.args.get("edit") else 0
+    can_products="manage_products" in admin_permissions
+    can_inventory="manage_inventory" in admin_permissions
+    can_orders="manage_orders" in admin_permissions
+    can_payments="manage_payments" in admin_permissions
+    orders=rows("SELECT o.*,u.full_name,u.email FROM orders o JOIN users u ON u.id=o.user_id ORDER BY o.created_at DESC LIMIT 30") if can_orders else []
+    products=product_query("WHERE p.status!='archived'",limit=100) if can_products or can_inventory else []
+    cats=rows("SELECT * FROM categories ORDER BY name") if can_products else []
+    edit_id=parse_int(request.args.get("edit"),0,1) if can_products and request.args.get("edit") else 0
     edit_product=product_dict(one("SELECT * FROM products WHERE id=:p",{"p":edit_id})) if edit_id else None
-    payments=rows("SELECT p.*,o.order_number,u.full_name FROM payments p JOIN orders o ON o.id=p.order_id JOIN users u ON u.id=o.user_id ORDER BY p.created_at DESC LIMIT 30")
+    payments=rows("SELECT p.*,o.order_number,u.full_name FROM payments p JOIN orders o ON o.id=p.order_id JOIN users u ON u.id=o.user_id ORDER BY p.created_at DESC LIMIT 30") if can_payments else []
     chart_status=rows("SELECT status,COUNT(*) n FROM orders GROUP BY status")
     chart_categories=rows("SELECT p.category,SUM(oi.quantity*oi.price) sales FROM order_items oi JOIN products p ON p.id=oi.product_id GROUP BY p.category ORDER BY sales DESC LIMIT 8")
-    stores=rows("SELECT s.*,u.username owner_username FROM stores s JOIN users u ON u.id=s.owner_user_id ORDER BY s.created_at DESC LIMIT 100")
-    return render_template("admin.html",stats=stats,orders=orders,products=products,categories=cats,payments=payments,chart_status=chart_status,chart_categories=chart_categories,admin_role=session.get("admin_role"),edit_product=edit_product,stores=stores)
+    stores=rows("SELECT s.*,u.username owner_username FROM stores s JOIN users u ON u.id=s.owner_user_id ORDER BY s.created_at DESC LIMIT 100") if can_products else []
+    return render_template("admin.html",stats=stats,orders=orders,products=products,categories=cats,payments=payments,
+        chart_status=chart_status,chart_categories=chart_categories,admin_role=admin_role,
+        admin_permissions=admin_permissions,edit_product=edit_product,stores=stores)
 
 @app.post("/admin/product")
 @admin_required("manage_products")
