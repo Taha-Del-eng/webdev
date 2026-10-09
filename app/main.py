@@ -35,11 +35,11 @@ if DATABASE_URL.startswith("sqlite"):
 app=Flask(__name__, template_folder=os.path.join(BASE_DIR,"templates"), static_folder=os.path.join(BASE_DIR,"static"))
 limiter=Limiter(key_func=get_remote_address, app=app, default_limits=[], storage_uri=os.getenv("RATELIMIT_STORAGE_URI","memory://"))
 secret_key=os.getenv("SECRET_KEY")
-if not secret_key and (os.getenv("VERCEL")=="1" or os.getenv("FLASK_ENV")=="production"):
+if not secret_key and (os.getenv("VERCEL")=="1" or os.getenv("APP_ENV","").lower()=="production" or os.getenv("FLASK_ENV","").lower()=="production"):
     raise RuntimeError("SECRET_KEY must be configured in production.")
 secure_cookie=os.getenv("SESSION_COOKIE_SECURE")
 if secure_cookie is None:
-    secure_cookie=os.getenv("VERCEL")=="1" or os.getenv("FLASK_ENV","").lower()=="production"
+    secure_cookie=os.getenv("VERCEL")=="1" or os.getenv("APP_ENV","").lower()=="production" or os.getenv("FLASK_ENV","").lower()=="production"
 app.config.update(SECRET_KEY=secret_key or secrets.token_hex(32), MAX_CONTENT_LENGTH=8*1024*1024,
                   SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                   SESSION_COOKIE_SECURE=str(secure_cookie).lower() in {"1","true","yes"},

@@ -52,7 +52,7 @@ Vendor stores require platform approval. Mixed-store checkout is blocked until s
 
 ## Deployment and security
 
-Configure production environment variables in your deployment platform and use PostgreSQL for production rather than SQLite. Never commit `.env`, API keys, admin passwords, customer photos, or private generated assets. Use HTTPS and strong secrets.
+Set `APP_ENV=production` in your deployment environment, configure strong `SECRET_KEY` and `JWT_SECRET_KEY` values, and use PostgreSQL rather than SQLite for production. Production mode disables demo seeding and enables secure session cookies. Never commit `.env`, API keys, admin passwords, customer photos, or private generated assets. Use HTTPS and strong secrets.
 
 ## Payment
 
