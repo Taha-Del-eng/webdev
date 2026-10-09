@@ -28,7 +28,7 @@ The hardware described for local development (about 7.7 GB RAM, Intel Iris Xe in
 
 ### Security and image handling
 
-The adapter accepts only JPG, PNG, and WebP image MIME types for uploaded person images, caps raw image bytes at 8 MiB, applies finite request timeouts, avoids returning provider response bodies, and reports unavailable inference honestly. The route should also validate image bytes using Pillow before calling the adapter. Review provider privacy/retention terms before using real customer photos.
+The adapter accepts only JPG, PNG, and WebP image MIME types for uploaded person images, caps raw image bytes at 8 MiB, applies finite request timeouts, avoids returning provider response bodies, and reports unavailable inference honestly. The `/api/tryon/<product_id>` route validates decoded image bytes and dimensions with Pillow before calling the adapter. The Try-On page now makes the unavailable state explicit when no provider key is configured and explains that external provider retention policies apply. Review provider privacy/retention terms before using real customer photos.
 
 ## AI Fashion Assistant
 
@@ -52,8 +52,17 @@ Vendor stores require platform approval. Mixed-store checkout is blocked until s
 
 ## Deployment and security
 
-Configure production environment variables in your deployment platform and use PostgreSQL for production rather than SQLite. Never commit `.env`, API keys, admin passwords, customer photos, or private generated assets. Use HTTPS and strong secrets.
+Set `APP_ENV=production` in your deployment environment, configure strong `SECRET_KEY` and `JWT_SECRET_KEY` values, and use PostgreSQL rather than SQLite for production. Production mode disables demo seeding and enables secure session cookies. Never commit `.env`, API keys, admin passwords, customer photos, or private generated assets. Use HTTPS and strong secrets.
 
 ## Payment
 
-Only manual Easypaisa / bank transfer is accepted. Customers submit a transaction/reference number and payment screenshot; orders remain pending verification until an authorized admin verifies or rejects the proof. The payment account is configured through environment variables. No card number or CVV is collected.
+Only manual Easypaisa / bank transfer is accepted. Customers submit a transaction/reference number and payment screenshot; orders remain pending verification until an authorized admin verifies or rejects the proof. No live payment provider verifies transfers. If an admin cancels an order after a verified payment, its status becomes Refund Pending; an authorized admin can mark it Refunded after handling the refund manually. The initial payment account and shipping defaults come from environment variables, then are stored in the database for superadmin configuration. Superadmin can change the Easypaisa destination, display name, delivery fee, and free-shipping threshold. These settings affect future checkouts only. No card number or CVV is collected.
+
+
+## Verification and test data
+
+Run `python verify_app.py` for the isolated marketplace smoke suite and `python -m unittest discover -s tests -v` for focused service tests. The smoke script now creates its SQLite database in a unique temporary directory and cleans up only that database; it no longer deletes a pre-existing `verify_yours_mart.db` in the project directory. GitHub Actions runs both commands on the marketplace feature branch and on pull requests targeting the configured integration branches.
+
+The application initializes a starter catalog only when the selected database has no products and demo seeding is enabled. Development defaults to demo seeding; production mode (`APP_ENV=production`, `FLASK_ENV=production`, or Vercel) disables it unless `SEED_DEMO_DATA=true` is explicitly set. Existing databases are never reset. Starter catalog entries are demo merchandise for local development, not verified real inventory or live offers; do not enable demo seeding in production.
+
+Uploaded product images and payment proofs are checked against their decoded image format, file-size cap, pixel dimensions, and animation support. Local uploads are kept under the ignored `instance/` directory; payment proofs are stored separately from public product media.

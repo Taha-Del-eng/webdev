@@ -1,1 +1,24 @@
-{% extends "base.html" %}{% block title %}AI Try-On — {{ product.name }}{% endblock %}{% block content %}<div class="tryon"><div><span class="eyebrow">YOURS AI · VIRTUAL TRY-ON</span><h1>See {{ product.name }} on you.</h1><p>Upload a clear photo of yourself. The AI will generate a realistic preview using the selected product.</p><div class="privacy">🔒 Your photo is used only for this try-on request. Do not upload photos of other people without permission.</div><form id="tryon-form" data-product="{{ product.id }}"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><label class="upload">Drop a JPG, PNG or WebP here<input id="photo" type="file" name="photo" accept="image/jpeg,image/png,image/webp" required></label><img id="preview" class="preview hidden" alt="Preview"><button class="btn dark" id="tryon-submit">Generate AI Try-On</button></form><div id="tryon-status"></div></div><aside class="tryon-product"><img src="{{ product.image_url }}" alt="{{ product.name }}"><b>{{ product.name }}</b><span>Rs. {{ "{:,.0f}".format(product.price) }}</span></aside></div>{% endblock %}
+{% extends "base.html" %}
+{% block title %}AI Try-On — {{ product.name }}{% endblock %}
+{% block content %}
+<div class="tryon">
+  <div>
+    <span class="eyebrow">YOURS AI · VIRTUAL TRY-ON</span>
+    <h1>See {{ product.name }} on you.</h1>
+    <p>Request a preview using the selected product and a clear photo of yourself.</p>
+    <div class="privacy" role="note">Your photo is sent to the configured external AI provider for processing. The provider's own retention rules may apply. Do not upload another person's photo without their permission.</div>
+    {% if tryon_available %}
+    <form id="tryon-form" data-product="{{ product.id }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <label class="upload">Choose a JPG, PNG or WebP photo<input id="photo" type="file" name="photo" accept="image/jpeg,image/png,image/webp" required></label>
+      <img id="preview" class="preview hidden" alt="Preview">
+      <button class="btn dark" id="tryon-submit" type="submit">Generate AI Try-On</button>
+    </form>
+    {% else %}
+    <div class="alert" role="status">{{ tryon_unavailable_message }} You can still browse and purchase the product.</div>
+    {% endif %}
+    <div id="tryon-status" aria-live="polite"></div>
+  </div>
+  <aside class="tryon-product"><img src="{{ product.image_url }}" alt="{{ product.name }}"><b>{{ product.name }}</b><span>Rs. {{ "{:,.0f}".format(product.price) }}</span></aside>
+</div>
+{% endblock %}
