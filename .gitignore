@@ -12,3 +12,14 @@ uploads/
 
 instance/private_payments/
 verify_yours_mart.db
+
+# Local tooling and generated artifacts
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.log
+*.tmp
+dist/
+build/
+node_modules/
