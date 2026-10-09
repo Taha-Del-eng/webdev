@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ store.name }} — Yours Mart{% endblock %}
 {% block content %}
-<section class="shop-head"><span class="eyebrow">YOURS MART STOREFRONT</span><h1>{{ store.name }}</h1><p>{{ store.description or 'Discover products from this store.' }}</p></section>
+{% if store.cover_url %}<div class="store-cover"><img src="{{ store.cover_url }}" alt="{{ store.name }} cover"></div>{% endif %}<section class="shop-head">{% if store.logo_url %}<img class="store-logo" src="{{ store.logo_url }}" alt="{{ store.name }} logo">{% endif %}<span class="eyebrow">YOURS MART STOREFRONT</span><h1>{{ store.name }}</h1><p>{{ store.description or 'Discover products from this store.' }}</p></section>
 <section class="product-grid">{% for p in products %}<a class="product-card" href="/product/{{ p.slug }}"><div class="product-image"><img src="{{ p.image_url }}" alt="{{ p.name }}" loading="lazy"></div><div class="product-info"><span class="eyebrow">{{ p.brand or store.name }}</span><h3>{{ p.name }}</h3><b>Rs. {{ "{:,.0f}".format(p.price) }}</b></div></a>{% else %}<div class="empty">This store has no available products yet.</div>{% endfor %}</section>
 {% endblock %}
