@@ -66,3 +66,14 @@ input,select,textarea{min-width:0}
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}
 }
+
+
+.category-nav{display:flex;align-items:center;gap:clamp(14px,2.5vw,32px);padding:12px 5vw;background:#fff;border-bottom:1px solid var(--line);overflow-x:auto;white-space:nowrap;scrollbar-width:thin}
+.category-nav a{font-size:13px;font-weight:600;color:#555;flex:0 0 auto}
+.category-nav a:first-child{color:var(--ink)}
+.category-nav a:hover{color:#637300}
+.nav .search input:focus-visible{outline-offset:-3px}
+@media(max-width:650px){
+ .category-nav{gap:20px;padding:11px 5vw}
+ .category-nav a{font-size:12px}
+}
