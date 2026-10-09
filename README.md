@@ -57,3 +57,12 @@ Configure production environment variables in your deployment platform and use P
 ## Payment
 
 Only manual Easypaisa / bank transfer is accepted. Customers submit a transaction/reference number and payment screenshot; orders remain pending verification until an authorized admin verifies or rejects the proof. The payment account is configured through environment variables. No card number or CVV is collected.
+
+
+## Verification and test data
+
+Run `python verify_app.py` for the isolated marketplace smoke suite and `python -m unittest discover -s tests -v` for focused service tests. The smoke script now creates its SQLite database in a unique temporary directory and cleans up only that database; it no longer deletes a pre-existing `verify_yours_mart.db` in the project directory. GitHub Actions runs both commands on the marketplace feature branch and on pull requests targeting the configured integration branches.
+
+The application initializes a starter catalog only when the selected database has no products. Those starter catalog entries are demo merchandise for local development, not verified real inventory or live offers. Do not use a database seeded with demo products as a production catalog without reviewing and replacing the data.
+
+Uploaded product images and payment proofs are checked against their decoded image format, file-size cap, pixel dimensions, and animation support. Local uploads are kept under the ignored `instance/` directory; payment proofs are stored separately from public product media.
