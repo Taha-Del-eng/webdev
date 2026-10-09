@@ -1108,7 +1108,10 @@ def save_product_image(file_obj):
     try:
         img=Image.open(BytesIO(raw))
         fmt=img.format
+        width,height=img.size
         if fmt not in {"JPEG","PNG","WEBP"}: raise ValueError
+        if width < 1 or height < 1 or width > 6000 or height > 6000: raise ValueError
+        if getattr(img,"is_animated",False): raise ValueError
         img.verify()
     except Exception:
         abort(400,"Product image must be a valid JPG, PNG or WebP file.")
@@ -1143,7 +1146,10 @@ def save_private_payment_proof(file_obj):
     if not raw or len(raw)>8*1024*1024:abort(400,"Payment proof must be a valid image under 8MB.")
     try:
         img=Image.open(BytesIO(raw))
+        width,height=img.size
         if img.format not in {"JPEG","PNG","WEBP"}:raise ValueError
+        if width < 1 or height < 1 or width > 6000 or height > 6000:raise ValueError
+        if getattr(img,"is_animated",False):raise ValueError
         img.verify()
     except Exception:abort(400,"Payment proof must be JPG, PNG or WebP.")
     # Cloudinary authenticated assets are appropriate for production/serverless because they
