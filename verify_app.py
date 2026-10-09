@@ -1,13 +1,13 @@
 import os
 import re
+import tempfile
 from pathlib import Path
 from io import BytesIO
 from PIL import Image
 from werkzeug.security import generate_password_hash
 
-DB_PATH=Path("verify_yours_mart.db")
-if DB_PATH.exists():
-    DB_PATH.unlink()
+_VERIFY_TEMP = tempfile.TemporaryDirectory(prefix="yours-mart-verify-")
+DB_PATH = Path(_VERIFY_TEMP.name) / "verify_yours_mart.db"
 
 os.environ["DATABASE_URL"]=f"sqlite:///{DB_PATH.resolve()}"
 os.environ["SECRET_KEY"]="verify-secret"
@@ -202,7 +202,4 @@ assert all("name" in p and "price" in p and "slug" in p for p in assistant.json[
 
 print("Yours Mart production smoke verification passed.")
 engine.dispose()
-try:
-    DB_PATH.unlink()
-except FileNotFoundError:
-    pass
+_VERIFY_TEMP.cleanup()
