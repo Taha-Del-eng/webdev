@@ -11,3 +11,7 @@
 .checkout-item div{display:grid;gap:5px;min-width:0}
 .checkout-item small{color:#666;font-size:.85rem}
 #checkout-submit:disabled{opacity:.65;cursor:wait}
+
+.store-cover{height:220px;margin:24px 5vw 0;overflow:hidden;border-radius:20px;background:#eee}
+.store-cover img{width:100%;height:100%;object-fit:cover}
+.store-logo{width:76px;height:76px;object-fit:cover;border-radius:18px;margin:0 0 12px;border:1px solid var(--line)}
