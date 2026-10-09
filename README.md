@@ -1,83 +1,59 @@
 # Yours Mart
 
-Yours Mart is a Flask-based AI fashion marketplace rebuilt from the original Flask/SQLite app into a deployment-ready commerce foundation.
+Yours Mart is a Flask-based fashion marketplace with customer accounts, catalog browsing, cart and checkout, vendor stores, role-separated admin tooling, manual Easypaisa/bank-transfer verification, a catalog-grounded AI assistant, and a virtual try-on adapter.
 
 ## Included
-- Premium responsive fashion marketplace UI.
-- Database-backed products with slugs, brands, categories, pricing, discounts, ratings, sizes, colours, tags and image URLs.
-- Search, category/brand/price/size/rating filters and sorting.
-- Persistent cart and wishlist.
-- Password hashing, secure sessions and CSRF protection.
-- Manual Easypaisa / bank-transfer checkout with stock validation, payment-reference capture, proof upload and real orders/order-items.
-- Customer account, orders and wishlist.
-- Separate customer/admin/superadmin authentication, RBAC permissions, product/category/order management, inventory ledger, payment verification, customer management, audit logs, and sales/customer/stock metrics.
-- Catalog-grounded AI Fashion Assistant with optional LLM enhancement.
-- Real AI Virtual Try-On using the configured FASHN provider; when the provider is unavailable or unconfigured, the UI reports the failure instead of fabricating an image.
-- Optional Cloudinary image storage.
-- PostgreSQL production support with SQLite local fallback.
-- Vercel serverless entrypoint and environment-based secrets.
+
+- Responsive fashion marketplace with database-backed products, search, filters, sorting, cart, and wishlist.
+- Password hashing, secure sessions, CSRF protection, and a separate JWT bearer API with refresh-token rotation.
+- Manual Easypaisa / bank transfer checkout with payment proof upload and admin review.
+- Separate customer, vendor, admin, and superadmin permissions.
+- Catalog-grounded assistant, with optional external LLM enhancement.
+- Virtual try-on adapter for genuine external provider jobs; no fake images or mock success.
+- Optional Cloudinary storage and PostgreSQL support, with SQLite local fallback.
 
 ## Local setup
-1. Use Python 3.11+.
-2. Create a virtual environment.
-3. Install dependencies with pip install -r requirements.txt.
-4. Copy .env.example to .env.
-5. Set a strong SECRET_KEY.
-6. Use DATABASE_URL=sqlite:///yours_mart.db locally or PostgreSQL in production.
-7. Generate an admin hash with: python -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('CHANGE_THIS'))"
-8. Set ADMIN_USERNAME and ADMIN_PASSWORD_HASH.
-9. Run python app.py.
-10. Open http://localhost:5000.
 
-## AI Virtual Try-On
-Default provider: FASHN (or another compatible provider configured through the environment).
-AI_API_URL=https://api.fashn.ai
-AI_MODEL=tryon-max
-AI_API_KEY=server-side-key
+Use a Python version supported by the project's installed dependencies, create a virtual environment, install `requirements.txt`, copy `.env.example` to `.env`, set strong local secrets, and run `python app.py`. Keep `.env` out of Git.
 
-The API key is never sent to the browser. Customer photos are handled in memory and passed to the configured AI provider for generation. Review provider privacy/retention settings and obtain user consent before production use.
+## AI Virtual Try-On status
 
-If AI_API_KEY is absent, the flow explicitly reports that live AI Try-On is unavailable; no fake/generated placeholder is returned.
+The current application has a real FASHN-compatible external-provider path. It needs an authorized provider key and may incur provider charges. Configure `AI_TRYON_BACKEND=provider`, `AI_API_URL=https://api.fashn.ai`, `AI_MODEL=tryon-max`, and set `AI_API_KEY` privately. The server does not send the key to the browser. Customer photos are transmitted to the configured provider for processing; disclose this and obtain consent before production use.
+
+### Local, zero-cost inference
+
+Set `AI_TRYON_BACKEND=local` only to select the local mode explicitly. At present, a production-suitable local model adapter and weights are **not bundled or installed**, so this mode fails closed with a clear message rather than returning a fabricated result. No model weights are downloaded automatically.
+
+The hardware described for local development (about 7.7 GB RAM, Intel Iris Xe integrated graphics, no NVIDIA GPU) is not a safe basis for promising practical inference for the popular high-quality diffusion-based try-on models. Model repositories and weights have varying licenses; some are research/non-commercial only. This project does not select or bundle a model until both commercial-use rights and realistic hardware requirements are verified. Local try-on is therefore **not currently operational**; provider-backed generation is only operational when the external API is configured and reachable.
+
+### Security and image handling
+
+The adapter accepts only JPG, PNG, and WebP image MIME types for uploaded person images, caps raw image bytes at 8 MiB, applies finite request timeouts, avoids returning provider response bodies, and reports unavailable inference honestly. The route should also validate image bytes using Pillow before calling the adapter. Review provider privacy/retention terms before using real customer photos.
 
 ## AI Fashion Assistant
-Optional LLM enhancement uses an OpenAI-compatible chat-completions endpoint:
-AI_ASSISTANT_API_KEY
-AI_ASSISTANT_API_URL
-AI_ASSISTANT_MODEL
 
-Without these variables, the assistant still recommends actual products from the Yours Mart catalog.
+Optional LLM enhancement uses an OpenAI-compatible chat-completions endpoint via `AI_ASSISTANT_API_KEY`, `AI_ASSISTANT_API_URL`, and `AI_ASSISTANT_MODEL`. Without those settings, the assistant can still recommend products from the catalog.
 
 ## Cloud images
-For production uploads configure CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.
+
+For production uploads, configure `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`.
 
 ## JWT API and vendor stores
 
-The server-rendered website uses its CSRF-protected session cookie. Programmatic clients can use the separate Bearer-token API:
 - `GET /api/auth/csrf` returns a CSRF token for JSON POST requests.
-- `POST /api/auth/signup` accepts `full_name`, `email`, `username`, and `password`.
-- `POST /api/auth/login` accepts `username` or `email`, plus `password`.
+- `POST /api/auth/signup` and `POST /api/auth/login` issue bearer tokens.
 - `POST /api/auth/refresh` rotates a refresh token and revokes its predecessor.
 - `POST /api/auth/logout` revokes a refresh token.
 - `GET /api/v1/me` and `GET /api/v1/orders` require `Authorization: Bearer <access_token>`.
 
-Set `JWT_SECRET_KEY` to a strong random secret in production. Access tokens default to 15 minutes (maximum one hour); refresh tokens default to 14 days (maximum 30 days). JSON POST requests must include `X-CSRFToken` from `/api/auth/csrf`.
+Set `JWT_SECRET_KEY` to a strong random secret. Access tokens default to 15 minutes (maximum one hour); refresh tokens default to 14 days (maximum 30 days). JSON POST requests must include `X-CSRFToken` from `/api/auth/csrf`.
 
-Customers can apply for one store at `POST /stores/apply` and manage it at `/vendor`. Store applications require platform approval. Approved owners can add/edit products, manage fulfillment for paid store-only orders, and use the public `/stores/<slug>` storefront. Mixed-store checkout is blocked until split orders are supported.
+Vendor stores require platform approval. Mixed-store checkout is blocked until split-order fulfillment is supported. Login and API signup endpoints have per-IP rate limits; configure shared Redis for multi-worker production.
 
-Login and API signup endpoints have per-IP rate limits. The default `memory://` backend is suitable for local development only; configure `RATELIMIT_STORAGE_URI` with a shared Redis URL for multi-worker production deployments.
+## Deployment and security
 
-## Vercel
-Configure production environment variables in Vercel. The entrypoint is api/index.py and vercel.json routes requests to it. Use PostgreSQL for production rather than SQLite.
-
-Typical deployment commands:
-vercel
-vercel --prod
-
-## Git workflow
-The production-ready implementation is maintained on main. Feature work should use short-lived branches and pull requests.
-
-## Security
-Never commit .env files, API keys, admin passwords, customer photos or private generated assets. Use HTTPS, strong secrets, PostgreSQL and cloud storage in production.
+Configure production environment variables in your deployment platform and use PostgreSQL for production rather than SQLite. Never commit `.env`, API keys, admin passwords, customer photos, or private generated assets. Use HTTPS and strong secrets.
 
 ## Payment
-Only manual Easypaisa / bank transfer is accepted. Customers submit a transaction/reference number plus payment screenshot; orders remain in payment verification until an authorized admin verifies or rejects the proof. The configured account defaults to 03352935407 and is controlled through environment variables. No card number or CVV is collected.
+
+Only manual Easypaisa / bank transfer is accepted. Customers submit a transaction/reference number and payment screenshot; orders remain pending verification until an authorized admin verifies or rejects the proof. The payment account is configured through environment variables. No card number or CVV is collected.
