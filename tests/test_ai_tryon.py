@@ -33,10 +33,11 @@ class TryOnAdapterTests(unittest.TestCase):
         with self.assertRaises(TryOnError):
             _data_uri(b"x" * (8 * 1024 * 1024 + 1), "image/jpeg")
 
-    def test_missing_provider_key_fails_without_fake_success(self):
+    def test_missing_provider_key_reports_unavailable_without_fake_success(self):
         os.environ.pop("AI_API_KEY", None)
-        with self.assertRaisesRegex(TryOnError, "No image was generated"):
-            generate_virtual_tryon((b"person", "image/jpeg"), "https://example.com/garment.jpg")
+        result = generate_virtual_tryon((b"person", "image/jpeg"), "https://example.com/garment.jpg")
+        self.assertEqual(result["mode"], "unavailable")
+        self.assertIn("No image was generated", result["message"])
 
     @patch("app.services.ai_tryon.requests.post")
     def test_real_provider_job_returns_job_id(self, post):
@@ -72,10 +73,11 @@ class TryOnAdapterTests(unittest.TestCase):
             generate_virtual_tryon((b"person", "image/jpeg"), "https://example.com/garment.jpg")
         self.assertNotIn("sensitive provider diagnostic", str(raised.exception))
 
-    def test_local_backend_fails_closed_until_model_is_installed(self):
+    def test_local_backend_reports_unavailable_until_model_is_installed(self):
         os.environ["AI_TRYON_BACKEND"] = "local"
-        with self.assertRaisesRegex(TryOnError, "not installed"):
-            generate_virtual_tryon((b"person", "image/jpeg"), "https://example.com/garment.jpg")
+        result = generate_virtual_tryon((b"person", "image/jpeg"), "https://example.com/garment.jpg")
+        self.assertEqual(result["mode"], "unavailable")
+        self.assertIn("not installed", result["message"])
 
 
 if __name__ == "__main__":
