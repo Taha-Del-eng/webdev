@@ -64,6 +64,8 @@ Set `JWT_SECRET_KEY` to a strong random secret in production. Access tokens defa
 
 Customers can apply for one store at `POST /stores/apply` and manage it at `/vendor`. Store applications require platform approval. Approved owners can add/edit products, manage fulfillment for paid store-only orders, and use the public `/stores/<slug>` storefront. Mixed-store checkout is blocked until split orders are supported.
 
+Login and API signup endpoints have per-IP rate limits. The default `memory://` backend is suitable for local development only; configure `RATELIMIT_STORAGE_URI` with a shared Redis URL for multi-worker production deployments.
+
 ## Vercel
 Configure production environment variables in Vercel. The entrypoint is api/index.py and vercel.json routes requests to it. Use PostgreSQL for production rather than SQLite.
 
