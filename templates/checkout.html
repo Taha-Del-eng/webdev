@@ -1,1 +1,60 @@
-{% extends "base.html" %}{% block title %}Checkout — Yours Mart{% endblock %}{% block content %}<div class="checkout"><div><span class="eyebrow">SECURE CHECKOUT</span><h1>Almost yours.</h1>{% if error %}<div class="alert">{{ error }}</div>{% endif %}<form method="post" enctype="multipart/form-data" class="checkout-form"><input type="hidden" name="_csrf" value="{{ csrf_token() }}"><h3>1. Delivery details</h3><input name="full_name" placeholder="Full name" required><input name="phone" placeholder="Phone number" required><div class="two"><input name="province" placeholder="Province" required><input name="city" placeholder="City" required></div><input name="area" placeholder="Area / neighbourhood" required><textarea name="address" placeholder="Street / house address" required></textarea><input name="postal_code" placeholder="Postal code (optional)"><textarea name="instructions" placeholder="Delivery instructions (optional)"></textarea><h3>2. Payment</h3><label class="payment-option"><input type="radio" name="payment_method" value="easypaisa" checked> <b>Easypaisa / Bank Transfer</b><span>Manual verification — no card or CVV is collected.</span></label><div class="payment-box"><b>Easypaisa</b><p>Send <strong>Rs. {{ "{:,.0f}".format(total) }}</strong> to <strong>{{ payment_account }}</strong> ({{ payment_account_name }}).</p><small>After payment, choose Easypaisa above, enter the transaction/reference number and upload the screenshot.</small><input name="transaction_ref" placeholder="Transaction / reference number"><input type="file" name="payment_proof" accept="image/jpeg,image/png,image/webp"></div><button class="btn dark">Place order · Rs. {{ "{:,.0f}".format(total) }}</button></form></div><aside class="summary"><h2>Order summary</h2>{% for i in items %}<div><span>{{ i.name }} × {{ i.quantity }}</span><b>Rs. {{ "{:,.0f}".format(i.price*i.quantity) }}</b></div>{% endfor %}<hr><div><span>Subtotal</span><b>Rs. {{ "{:,.0f}".format(subtotal) }}</b></div><div><span>Delivery</span><b>{{ 'Free' if shipping==0 else 'Rs. 250' }}</b></div><div class="total"><span>Total</span><b>Rs. {{ "{:,.0f}".format(total) }}</b></div></aside></div>{% endblock %}
+{% extends "base.html" %}
+{% block title %}Checkout — Yours Mart{% endblock %}
+{% block content %}
+<div class="checkout">
+  <div>
+    <span class="eyebrow">SECURE CHECKOUT</span>
+    <h1>Almost yours.</h1>
+    <p>Review delivery details and submit your Easypaisa transfer for manual verification.</p>
+    {% if error %}<div class="alert" role="alert">{{ error }}</div>{% endif %}
+    <form id="checkout-form" method="post" enctype="multipart/form-data" class="checkout-form">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      {% if saved_addresses %}
+      <label>Use a saved address
+        <select id="saved-address">
+          <option value="">Enter a new address</option>
+          {% for a in saved_addresses %}
+          <option value="{{ a.id }}" data-name="{{ a.full_name or '' }}" data-phone="{{ a.phone or '' }}" data-province="{{ a.province or '' }}" data-area="{{ a.area or '' }}" data-address="{{ a.address or '' }}" data-city="{{ a.city or '' }}" data-postal="{{ a.postal_code or '' }}" data-instructions="{{ a.instructions or '' }}">{{ a.full_name or 'Address' }} — {{ a.area or a.city or a.address }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+      <h3>1. Delivery details</h3>
+      <label>Full name<input name="full_name" maxlength="120" autocomplete="name" value="{{ request.form.get('full_name','') }}" required></label>
+      <label>Phone number<input name="phone" maxlength="40" autocomplete="tel" inputmode="tel" placeholder="03xx-xxxxxxx" value="{{ request.form.get('phone','') }}" required></label>
+      <div class="two">
+        <label>Province<input name="province" maxlength="80" autocomplete="address-level1" value="{{ request.form.get('province','') }}" required></label>
+        <label>City<input name="city" maxlength="80" autocomplete="address-level2" value="{{ request.form.get('city','') }}" required></label>
+      </div>
+      <label>Area / neighbourhood<input name="area" maxlength="120" value="{{ request.form.get('area','') }}" required></label>
+      <label>Street / house address<textarea name="address" maxlength="1000" autocomplete="street-address" required>{{ request.form.get('address','') }}</textarea></label>
+      <label>Postal code (optional)<input name="postal_code" maxlength="30" autocomplete="postal-code" value="{{ request.form.get('postal_code','') }}"></label>
+      <label>Delivery instructions (optional)<textarea name="instructions" maxlength="1000">{{ request.form.get('instructions','') }}</textarea></label>
+      <h3>2. Payment</h3>
+      <label class="payment-option"><input type="radio" name="payment_method" value="easypaisa" checked><b>Easypaisa / Bank Transfer</b><span>Manual verification. We never ask for a card number or CVV.</span></label>
+      <div class="payment-box">
+        <b>Transfer details</b>
+        <p>Send <strong>Rs. {{ "{:,.0f}".format(total) }}</strong> to <strong>{{ payment_account }}</strong> ({{ payment_account_name }}).</p>
+        <small>After paying, enter your transaction/reference number and upload the payment screenshot. Your order stays pending until an admin verifies it.</small>
+        <label>Transaction / reference number<input name="transaction_ref" maxlength="120" autocomplete="off" value="{{ request.form.get('transaction_ref','') }}" required></label>
+        <label>Payment screenshot<input type="file" name="payment_proof" accept="image/jpeg,image/png,image/webp" required></label>
+      </div>
+      <button id="checkout-submit" class="btn dark" type="submit">Place order · Rs. {{ "{:,.0f}".format(total) }}</button>
+      <p class="caption">Your final total is calculated by Yours Mart, not by the browser.</p>
+    </form>
+  </div>
+  <aside class="summary">
+    <h2>Order summary</h2>
+    {% for i in items %}
+    <div class="checkout-item">
+      <img src="{{ i.image_url }}" alt="" loading="lazy">
+      <div><b>{{ i.name }}</b><small>Qty {{ i.quantity }}{% if i.size %} · Size {{ i.size }}{% endif %}{% if i.color %} · {{ i.color }}{% endif %}</small><b>Rs. {{ "{:,.0f}".format(i.price*i.quantity) }}</b></div>
+    </div>
+    {% endfor %}
+    <hr>
+    <div><span>Subtotal</span><b>Rs. {{ "{:,.0f}".format(subtotal) }}</b></div>
+    <div><span>Delivery</span><b>{{ 'Free' if shipping==0 else 'Rs. 250' }}</b></div>
+    <div class="total"><span>Total</span><b>Rs. {{ "{:,.0f}".format(total) }}</b></div>
+  </aside>
+</div>
+{% endblock %}
