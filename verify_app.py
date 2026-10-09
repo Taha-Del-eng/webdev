@@ -218,6 +218,17 @@ assert one("SELECT payment_status,status FROM orders WHERE id=:o",{"o":first_pay
 token=csrf("/admin",client)
 review_again=client.post(f"/admin/payment/{first_payment['id']}",data={"_csrf":token,"status":"Rejected","reason":"Must not overwrite"})
 assert review_again.status_code==400
+# Admin cancellation of a verified order starts a manual refund; marking refunded updates payment state.
+token=csrf("/admin",client)
+admin_cancel=client.post(f"/admin/order/{first_payment['order_id']}",data={"_csrf":token,"status":"Cancelled"})
+assert admin_cancel.status_code==302
+assert one("SELECT payment_status FROM orders WHERE id=:o",{"o":first_payment["order_id"]})["payment_status"]=="Refund Pending"
+assert one("SELECT status FROM payments WHERE id=:p",{"p":first_payment["id"]})["status"]=="Refund Pending"
+token=csrf("/admin",client)
+admin_refund=client.post(f"/admin/order/{first_payment['order_id']}",data={"_csrf":token,"status":"Refunded"})
+assert admin_refund.status_code==302
+assert one("SELECT payment_status,status FROM orders WHERE id=:o",{"o":first_payment["order_id"]})["payment_status"]=="Refunded"
+assert one("SELECT status FROM payments WHERE id=:p",{"p":first_payment["id"]})["status"]=="Refunded"
 # Inventory adjustments are atomic and cannot make stock negative.
 stock_before_invalid=int(one("SELECT stock FROM products WHERE id=1")["stock"])
 token=csrf("/admin",client)

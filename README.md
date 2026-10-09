@@ -56,7 +56,7 @@ Configure production environment variables in your deployment platform and use P
 
 ## Payment
 
-Only manual Easypaisa / bank transfer is accepted. Customers submit a transaction/reference number and payment screenshot; orders remain pending verification until an authorized admin verifies or rejects the proof. The payment account is configured through environment variables. No card number or CVV is collected.
+Only manual Easypaisa / bank transfer is accepted. Customers submit a transaction/reference number and payment screenshot; orders remain pending verification until an authorized admin verifies or rejects the proof. No live payment provider verifies transfers. If an admin cancels an order after a verified payment, its status becomes Refund Pending; an authorized admin can mark it Refunded after handling the refund manually. The payment account is configured through environment variables. No card number or CVV is collected.
 
 
 ## Verification and test data

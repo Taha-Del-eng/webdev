@@ -39,7 +39,7 @@ if not secret_key and (os.getenv("VERCEL")=="1" or os.getenv("FLASK_ENV")=="prod
     raise RuntimeError("SECRET_KEY must be configured in production.")
 secure_cookie=os.getenv("SESSION_COOKIE_SECURE")
 if secure_cookie is None:
-    secure_cookie=os.getenv("VERCEL")=="1"
+    secure_cookie=os.getenv("VERCEL")=="1" or os.getenv("FLASK_ENV","").lower()=="production"
 app.config.update(SECRET_KEY=secret_key or secrets.token_hex(32), MAX_CONTENT_LENGTH=8*1024*1024,
                   SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax",
                   SESSION_COOKIE_SECURE=str(secure_cookie).lower() in {"1","true","yes"},
@@ -800,6 +800,7 @@ def tryon(slug):
         tryon_unavailable_message=tryon_unavailable_message)
 
 @app.post("/api/tryon/<int:pid>")
+@limiter.limit("5 per minute", methods=["POST"])
 @login_required
 def tryon_start(pid):
     p=one("SELECT * FROM products WHERE id=:p",{"p":pid})
@@ -833,6 +834,7 @@ def tryon_start(pid):
     return jsonify(mode="live",status="processing",history_id=hid,job_id=result["job_id"])
 
 @app.get("/api/tryon/status/<job_id>")
+@limiter.limit("60 per minute")
 @login_required
 def tryon_status(job_id):
     owned=one("SELECT id FROM tryon_history WHERE job_id=:j AND user_id=:u",{"j":job_id,"u":session["user_id"]})
@@ -852,6 +854,7 @@ def tryon_status(job_id):
     return jsonify(status=r.get("status"),error=r.get("error"))
 
 @app.post("/api/assistant")
+@limiter.limit("20 per minute", methods=["POST"])
 def assistant():
     query=request.json.get("message","").strip() if request.is_json else request.form.get("message","").strip()
     if not query:return jsonify(error="Ask me about products, outfits, budgets, colours or sizes."),400
@@ -974,7 +977,7 @@ def admin_order(oid):
         "Out for Delivery":{"Delivered","Returned"},
         "Delivered":{"Returned"},
         "Returned":{"Refunded"},
-        "Cancelled":set(),"Refunded":set(),
+        "Cancelled":{"Refunded"},"Refunded":set(),
     }
     with engine.begin() as c:
         order=c.execute(text("SELECT * FROM orders WHERE id=:o"),{"o":oid}).mappings().first()
@@ -983,6 +986,8 @@ def admin_order(oid):
             abort(400,"Invalid order status transition.")
         if status in {"Confirmed","Processing","Packed","Shipped","Out for Delivery","Delivered"} and order["payment_status"]!="Verified":
             abort(400,"Payment must be verified before fulfillment.")
+        if status=="Refunded" and order["payment_status"] not in {"Refund Pending","Verified","Paid"}:
+            abort(400,"No verified payment is recorded for this order to refund.")
         changed=c.execute(text("""UPDATE orders SET status=:s,updated_at=CURRENT_TIMESTAMP
             WHERE id=:o AND status=:old RETURNING id"""),{"s":status,"o":oid,"old":order["status"]}).first()
         if not changed:abort(400,"The order changed while you were updating it. Refresh and retry.")
@@ -991,6 +996,13 @@ def admin_order(oid):
             for item in items:
                 c.execute(text("UPDATE products SET stock=stock+:q,updated_at=CURRENT_TIMESTAMP WHERE id=:p"),
                           {"q":item[1],"p":item[0]})
+            if order["payment_status"] in {"Verified","Paid"}:
+                c.execute(text("UPDATE orders SET payment_status='Refund Pending' WHERE id=:o"),{"o":oid})
+                c.execute(text("UPDATE payments SET status='Refund Pending' WHERE order_id=:o AND status IN ('Verified','Paid')"),{"o":oid})
+        elif status=="Refunded":
+            c.execute(text("UPDATE orders SET payment_status='Refunded' WHERE id=:o"),{"o":oid})
+            c.execute(text("""UPDATE payments SET status='Refunded',verified_by=:a,verified_at=CURRENT_TIMESTAMP
+                WHERE order_id=:o AND status IN ('Refund Pending','Verified','Paid')"""),{"a":session["admin_id"],"o":oid})
     admin_audit("order_status_changed","order",oid,status)
     return redirect(url_for("admin"))
 
