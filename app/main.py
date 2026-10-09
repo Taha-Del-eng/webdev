@@ -358,7 +358,7 @@ def signup():
     return render_template("auth.html",mode="signup")
 
 @app.route("/login",methods=["GET","POST"])
-@limiter.limit("5 per minute")
+@limiter.limit("5 per minute", methods=["POST"])
 def login():
     if request.method=="POST":
         u=one("SELECT * FROM users WHERE (username=:u OR email=:u) AND is_active=1",{"u":request.form.get("username","").strip()})
@@ -445,7 +445,7 @@ def api_auth_csrf():
     return jsonify(csrf_token=csrf_token())
 
 @app.post("/api/auth/signup")
-@limiter.limit("5 per hour")
+@limiter.limit("5 per hour", methods=["POST"])
 def api_auth_signup():
     data=request.get_json(silent=True) or {}
     name=str(data.get("full_name","")).strip(); email=str(data.get("email","")).strip().lower()
