@@ -120,6 +120,14 @@ assert owner_client.post("/vendor/product",data={"_csrf":token,"name":"Vendor Te
 vendor_product=one("SELECT * FROM products WHERE name='Vendor Test Product'")
 assert vendor_product and vendor_product["store_id"]==store["id"]
 assert owner_client.get(f"/stores/{store['slug']}").status_code==200
+# Mixed-store checkout is rejected instead of creating an incorrectly fulfilled order.
+token=csrf("/shop",owner_client)
+assert owner_client.post("/cart/add/1",data={"_csrf":token,"quantity":"1","size":"M","color":"Black"}).status_code==302
+token=csrf("/shop",owner_client)
+assert owner_client.post(f"/cart/add/{vendor_product['id']}",data={"_csrf":token,"quantity":"1","size":"S","color":"Black"}).status_code==302
+mixed_checkout=owner_client.get("/checkout")
+assert mixed_checkout.status_code==200
+assert "different stores" in mixed_checkout.get_data(as_text=True)
 # Disabled customers cannot authenticate.
 from app.main import engine
 from sqlalchemy import text
