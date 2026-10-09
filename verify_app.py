@@ -144,6 +144,18 @@ assert owner_client.post(f"/cart/add/{vendor_product['id']}",data={"_csrf":token
 mixed_checkout=owner_client.get("/checkout",follow_redirects=True)
 assert mixed_checkout.status_code==200
 assert "different stores" in mixed_checkout.get_data(as_text=True)
+# Vendor can archive only its own products; archived listings disappear from the public catalog.
+token=csrf("/vendor",owner_client)
+archived=owner_client.post(f"/vendor/product/{vendor_product['id']}/archive",data={"_csrf":token})
+assert archived.status_code==302
+assert one("SELECT status,stock FROM products WHERE id=:p",{"p":vendor_product["id"]})["status"]=="archived"
+assert int(one("SELECT stock FROM products WHERE id=:p",{"p":vendor_product["id"]})["stock"])==0
+assert owner_client.get(f"/product/{vendor_product['slug']}").status_code==404
+# Try-On must not present a generation form when no real provider is configured.
+tryon_page=owner_client.get("/try-on/aero-oversized-tee")
+assert tryon_page.status_code==200
+assert "not configured" in tryon_page.get_data(as_text=True).lower()
+assert "Generate AI Try-On" not in tryon_page.get_data(as_text=True)
 # Disabled customers cannot authenticate.
 from app.main import engine
 from sqlalchemy import text

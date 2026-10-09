@@ -790,7 +790,14 @@ def cancel_order(oid):
 def tryon(slug):
     p=product_dict(one("SELECT * FROM products WHERE slug=:s AND status='active'",{"s":slug}))
     if not p: abort(404)
-    return render_template("tryon.html",product=p)
+    backend=os.getenv("AI_TRYON_BACKEND","provider").strip().lower()
+    tryon_available=backend=="provider" and bool(os.getenv("AI_API_KEY","").strip())
+    if backend=="local":
+        tryon_unavailable_message="Local AI Try-On is not installed. No image will be generated."
+    else:
+        tryon_unavailable_message="AI Try-On is not configured because the external provider API key is missing. No image will be generated."
+    return render_template("tryon.html",product=p,tryon_available=tryon_available,
+        tryon_unavailable_message=tryon_unavailable_message)
 
 @app.post("/api/tryon/<int:pid>")
 @login_required
@@ -1154,6 +1161,20 @@ def vendor_product():
         with engine.begin() as c:
             c.execute(text("INSERT INTO products(name,slug,brand,category,description,price,original_price,discount,stock,sizes,colors,tags,image_url,status,featured,store_id) VALUES(:n,:slug,:brand,'Other / Accessories',:d,:pr,:pr,0,:st,:sz,:co,'vendor',:img,'active',0,:s)"),{"n":name,"slug":slug,"brand":store["name"],"d":desc or name,"pr":price,"st":stock,"sz":sizes,"co":colors,"img":image,"s":store["id"]})
     flash("Store product saved.","success")
+    return redirect(url_for("vendor_dashboard"))
+
+@app.post("/vendor/product/<int:pid>/archive")
+@login_required
+def vendor_product_archive(pid):
+    store=one("SELECT id,status FROM stores WHERE owner_user_id=:u",{"u":session["user_id"]})
+    if not store or store["status"]!="approved":
+        abort(403,"Your approved store is required to manage products.")
+    with engine.begin() as c:
+        archived=c.execute(text("""UPDATE products SET status='archived',stock=0,updated_at=CURRENT_TIMESTAMP
+            WHERE id=:p AND store_id=:s AND status!='archived' RETURNING id"""),
+            {"p":pid,"s":store["id"]}).first()
+        if not archived:abort(404)
+    flash("Product archived and removed from the public catalog.","success")
     return redirect(url_for("vendor_dashboard"))
 
 @app.post("/vendor/order/<int:oid>")

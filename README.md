@@ -28,7 +28,7 @@ The hardware described for local development (about 7.7 GB RAM, Intel Iris Xe in
 
 ### Security and image handling
 
-The adapter accepts only JPG, PNG, and WebP image MIME types for uploaded person images, caps raw image bytes at 8 MiB, applies finite request timeouts, avoids returning provider response bodies, and reports unavailable inference honestly. The route should also validate image bytes using Pillow before calling the adapter. Review provider privacy/retention terms before using real customer photos.
+The adapter accepts only JPG, PNG, and WebP image MIME types for uploaded person images, caps raw image bytes at 8 MiB, applies finite request timeouts, avoids returning provider response bodies, and reports unavailable inference honestly. The `/api/tryon/<product_id>` route validates decoded image bytes and dimensions with Pillow before calling the adapter. The Try-On page now makes the unavailable state explicit when no provider key is configured and explains that external provider retention policies apply. Review provider privacy/retention terms before using real customer photos.
 
 ## AI Fashion Assistant
 
