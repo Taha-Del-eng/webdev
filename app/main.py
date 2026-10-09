@@ -580,21 +580,22 @@ def checkout():
     shipping=0 if subtotal>=5000 else 250
     total=subtotal+shipping
     account=os.getenv("PAYMENT_ACCOUNT","03352935407");account_name=os.getenv("PAYMENT_ACCOUNT_NAME","Yours Mart")
+    saved_addresses=rows("SELECT * FROM addresses WHERE user_id=:u ORDER BY is_default DESC,id DESC",{"u":session["user_id"]})
     if request.method=="POST":
         fields={k:request.form.get(k,"").strip() for k in ("full_name","phone","province","area","address","city","postal_code","instructions")}
         if not all(fields[k] for k in ("full_name","phone","province","area","address","city")):
-            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="Please complete all required delivery details.",payment_account=account,payment_account_name=account_name)
+            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="Please complete all required delivery details.",payment_account=account,payment_account_name=account_name,saved_addresses=saved_addresses)
         method=request.form.get("payment_method","").strip().lower()
         if method!="easypaisa":abort(400,"Only Easypaisa / Bank Transfer is supported.")
         proof=request.files.get("payment_proof");txref=request.form.get("transaction_ref","").strip()
         if method=="easypaisa" and (not proof or not proof.filename or not txref):
-            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="Easypaisa requires the transaction/reference number and payment screenshot.",payment_account=account,payment_account_name=account_name)
+            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="Easypaisa requires the transaction/reference number and payment screenshot.",payment_account=account,payment_account_name=account_name,saved_addresses=saved_addresses)
         if len(txref)>120:abort(400,"Transaction reference is too long.")
         if one("SELECT id FROM payments WHERE transaction_ref=:r",{"r":txref}):
-            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="This transaction/reference number has already been submitted.",payment_account=account,payment_account_name=account_name)
+            return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error="This transaction/reference number has already been submitted.",payment_account=account,payment_account_name=account_name,saved_addresses=saved_addresses)
         for i in items:
             if i["status"]!="active" or int(i["stock"])<int(i["quantity"]):
-                return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error=f"{i['name']} is no longer available in the requested quantity.",payment_account=account,payment_account_name=account_name)
+                return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,error=f"{i['name']} is no longer available in the requested quantity.",payment_account=account,payment_account_name=account_name,saved_addresses=saved_addresses)
         proof_path=save_private_payment_proof(proof)
         payment_status="Pending Verification"
         order_status="Payment Verification"
@@ -611,7 +612,7 @@ def checkout():
             c.execute(text("INSERT INTO payments(order_id,method,amount,transaction_ref,proof_path,status) VALUES(:o,:m,:a,:r,:p,:s)"),{"o":oid,"m":"Easypaisa","a":total,"r":txref or None,"p":proof_path,"s":payment_status})
             c.execute(text("DELETE FROM cart_items WHERE user_id=:u"),{"u":session["user_id"]})
         return redirect(url_for("order_detail",oid=oid))
-    return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,payment_account=account,payment_account_name=account_name)
+    return render_template("checkout.html",items=items,total=total,subtotal=subtotal,discount=0,shipping=shipping,payment_account=account,payment_account_name=account_name,saved_addresses=saved_addresses)
 
 @app.get("/account")
 @login_required
