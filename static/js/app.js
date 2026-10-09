@@ -44,6 +44,42 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  const checkoutForm = document.querySelector("#checkout-form");
+  if (checkoutForm) {
+    checkoutForm.addEventListener("submit", (event) => {
+      if (checkoutForm.dataset.submitting === "true") {
+        event.preventDefault();
+        return;
+      }
+      if (!checkoutForm.reportValidity()) {
+        event.preventDefault();
+        return;
+      }
+      checkoutForm.dataset.submitting = "true";
+      const submit = document.querySelector("#checkout-submit");
+      if (submit) {
+        submit.disabled = true;
+        submit.textContent = "Submitting your order…";
+      }
+    });
+  }
+
+  const addressSelect = document.querySelector("#saved-address");
+  if (addressSelect) {
+    addressSelect.addEventListener("change", () => {
+      const option = addressSelect.selectedOptions[0];
+      if (!option || !option.value) return;
+      const fields = {
+        full_name: "name", phone: "phone", province: "province", area: "area",
+        address: "address", city: "city", postal_code: "postal", instructions: "instructions"
+      };
+      Object.entries(fields).forEach(([field, attr]) => {
+        const input = document.querySelector('[name="' + field + '"]');
+        if (input) input.value = option.dataset[attr] || "";
+      });
+    });
+  }
+
   const fileInput = document.querySelector("#photo");
   const preview = document.querySelector("#preview");
   if (fileInput && preview) {
