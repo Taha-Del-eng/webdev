@@ -36,8 +36,9 @@ assert client.get("/health").json["status"]=="ok"
 assert client.get("/product/aero-oversized-tee").status_code==200
 assert client.get("/product/not-a-real-product").status_code==404
 
-def csrf(path="/signup"):
-    r=client.get(path)
+def csrf(path="/signup", test_client=None):
+    c=test_client or client
+    r=c.get(path)
     match=re.search(r'name="csrf-token" content="([^"]+)"',r.get_data(as_text=True))
     assert match, f"CSRF token not found on {path}"
     return match.group(1)
@@ -52,6 +53,13 @@ token=csrf()
 signup=client.post("/signup",data={"_csrf":token,"full_name":"Verify User","email":"verify@example.com","username":"verify_user","password":"strong-password-123"})
 assert signup.status_code==302
 uid=one("SELECT id FROM users WHERE username='verify_user'")["id"]
+
+token=csrf("/vendor")
+store_apply=client.post("/stores/apply",data={"_csrf":token,"name":"Verify Outfit Store","description":"Smoke test store","contact_email":"store@example.com","contact_phone":"03001234567"})
+assert store_apply.status_code==302
+store=one("SELECT * FROM stores WHERE owner_user_id=:u",{"u":uid})
+assert store and store["status"]=="pending_review"
+assert client.get("/vendor").status_code==200
 
 # Duplicate signup must be rejected, not treated as success.
 token=csrf()
@@ -96,6 +104,21 @@ assert payment["method"]=="Easypaisa" and payment["status"]=="Pending Verificati
 # Customer cannot access admin or superadmin.
 assert client.get("/admin").status_code in (302,403)
 assert client.get("/superadmin").status_code in (302,403)
+
+token=csrf("/admin")
+approved=client.post(f"/admin/store/{store['id']}/status",data={"_csrf":token,"status":"approved"})
+assert approved.status_code==302
+assert one("SELECT status FROM stores WHERE id=:s",{"s":store["id"]})["status"]=="approved"
+owner_client=app.test_client()
+token=csrf("/login",owner_client)
+assert owner_client.post("/login",data={"_csrf":token,"username":"verify_user","password":"strong-password-123"}).status_code==302
+token=csrf("/vendor",owner_client)
+assert owner_client.post("/vendor/product",data={"_csrf":token,"name":"Vendor Test Product","price":"1000","stock":"5","sizes":"S,M,L","colors":"Black","image_url":"","description":"Vendor isolation smoke test"}).status_code==302
+vendor_product=one("SELECT * FROM products WHERE name='Vendor Test Product'")
+assert vendor_product and vendor_product["store_id"]==store["id"]
+assert owner_client.get(f"/stores/{store['slug']}").status_code==200
+token=csrf("/vendor",client2)
+assert client2.post("/vendor/product",data={"_csrf":token,"name":"Unauthorized Product","price":"1000","stock":"1"}).status_code==403
 # Disabled customers cannot authenticate.
 from app.main import engine
 from sqlalchemy import text
@@ -108,9 +131,20 @@ assert disabled_login.status_code==200
 with engine.begin() as c:
     c.execute(text("UPDATE users SET is_active=1 WHERE id=:u"),{"u":uid})
 
-# Customer IDOR protection.
-other=client.get(f"/orders/{order_id+1}")
-assert other.status_code==404
+# Customer #2 places an order; Customer #1 cannot access it.
+client2=app.test_client()
+token=csrf("/signup",client2)
+signup2=client2.post("/signup",data={"_csrf":token,"full_name":"Second Verify User","email":"verify2@example.com","username":"verify_user_2","password":"strong-password-456"})
+assert signup2.status_code==302
+token=csrf("/shop",client2)
+assert client2.post("/cart/add/1",data={"_csrf":token,"quantity":"1","size":"M","color":"Black"}).status_code==302
+token=csrf("/checkout",client2)
+placed2=client2.post("/checkout",data={"_csrf":token,"full_name":"Second Verify User","phone":"03001234568","province":"Sindh","area":"Gulshan","address":"2 Verification Street","city":"Karachi","postal_code":"74000","instructions":"","payment_method":"easypaisa","transaction_ref":"VERIFY-12346","payment_proof":(BytesIO(__import__("base64").b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")),"proof2.png")})
+assert placed2.status_code==302
+other_order_id=int(placed2.location.rsplit("/",1)[-1])
+assert client.get(f"/orders/{order_id}").status_code==200
+assert client.get(f"/orders/{other_order_id}").status_code==404
+assert client2.get(f"/orders/{other_order_id}").status_code==200
 
 # Wishlist.
 token=csrf()
@@ -131,6 +165,22 @@ token=csrf("/admin-login")
 super_login=client.post("/admin-login",data={"_csrf":token,"username":"verify_super","password":"SuperPass123!"})
 assert super_login.status_code==302
 assert client.get("/superadmin").status_code==200
+
+# JWT API token protection, refresh rotation, replay rejection and logout.
+api_client=app.test_client()
+api_token=api_client.get("/api/auth/csrf").json["csrf_token"]
+api_headers={"X-CSRFToken":api_token}
+api_signup=api_client.post("/api/auth/signup",json={"full_name":"JWT Verify User","email":"jwtverify@example.com","username":"jwt_verify_user","password":"jwt-strong-password-123"},headers=api_headers)
+assert api_signup.status_code==201,api_signup.get_data(as_text=True)
+access=api_signup.json["access_token"]; refresh=api_signup.json["refresh_token"]
+assert api_client.get("/api/v1/me").status_code==401
+assert api_client.get("/api/v1/me",headers={"Authorization":f"Bearer {access}"}).json["user"]["username"]=="jwt_verify_user"
+rotated=api_client.post("/api/auth/refresh",json={"refresh_token":refresh},headers=api_headers)
+assert rotated.status_code==200,rotated.get_data(as_text=True)
+assert api_client.post("/api/auth/refresh",json={"refresh_token":refresh},headers=api_headers).status_code==401
+new_refresh=rotated.json["refresh_token"]
+assert api_client.post("/api/auth/logout",json={"refresh_token":new_refresh},headers=api_headers).status_code==200
+assert api_client.post("/api/auth/refresh",json={"refresh_token":new_refresh},headers=api_headers).status_code==401
 
 # AI assistant is database-grounded and remains usable without an external AI key.
 client=app.test_client()

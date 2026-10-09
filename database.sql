@@ -17,11 +17,40 @@ CREATE TABLE IF NOT EXISTS admin_permissions (
   id BIGSERIAL PRIMARY KEY, admin_id BIGINT NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
   permission VARCHAR(80) NOT NULL, UNIQUE(admin_id,permission)
 );
+CREATE TABLE IF NOT EXISTS stores (
+  id BIGSERIAL PRIMARY KEY,
+  owner_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  name VARCHAR(120) NOT NULL,
+  slug VARCHAR(140) UNIQUE NOT NULL,
+  description TEXT,
+  contact_email VARCHAR(180),
+  contact_phone VARCHAR(40),
+  status VARCHAR(24) NOT NULL DEFAULT 'pending_review' CHECK(status IN ('pending_review','approved','suspended')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS store_memberships (
+  id BIGSERIAL PRIMARY KEY,
+  store_id BIGINT NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role VARCHAR(24) NOT NULL DEFAULT 'owner',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(store_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS api_refresh_tokens (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  jti_hash VARCHAR(64) UNIQUE NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS categories (
   id BIGSERIAL PRIMARY KEY, name VARCHAR(120) UNIQUE NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS products (
-  id BIGSERIAL PRIMARY KEY, name VARCHAR(180) NOT NULL, slug VARCHAR(220) UNIQUE NOT NULL,
+  id BIGSERIAL PRIMARY KEY,
+  store_id BIGINT REFERENCES stores(id) ON DELETE SET NULL, name VARCHAR(180) NOT NULL, slug VARCHAR(220) UNIQUE NOT NULL,
   brand VARCHAR(120), category VARCHAR(120) NOT NULL, description TEXT,
   price NUMERIC(12,2) NOT NULL CHECK(price>0), original_price NUMERIC(12,2),
   discount NUMERIC(5,2) NOT NULL DEFAULT 0 CHECK(discount BETWEEN 0 AND 100),
@@ -89,6 +118,10 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
+CREATE INDEX IF NOT EXISTS idx_stores_owner ON stores(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_store_memberships_user ON store_memberships(user_id);
+CREATE INDEX IF NOT EXISTS idx_products_store ON products(store_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON api_refresh_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
 CREATE INDEX IF NOT EXISTS idx_products_created_at ON products(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_orders_user_created ON orders(user_id,created_at DESC);

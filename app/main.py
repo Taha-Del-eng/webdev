@@ -1,4 +1,5 @@
-import os, json, math, re, secrets, uuid
+import os, json, math, re, secrets, uuid, hashlib
+from datetime import timezone
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, abort, flash, send_file
@@ -7,6 +8,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
 from urllib.parse import urlparse
+import jwt
 from dotenv import load_dotenv
 import cloudinary
 import cloudinary.uploader
@@ -90,6 +92,8 @@ def valid_email(value):
 def init_db():
     ddl=[
     """CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, full_name VARCHAR(120) NOT NULL, email VARCHAR(180) UNIQUE NOT NULL, username VARCHAR(80) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS stores(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT, name VARCHAR(120) NOT NULL, slug VARCHAR(140) UNIQUE NOT NULL, description TEXT, contact_email VARCHAR(180), contact_phone VARCHAR(40), status VARCHAR(24) NOT NULL DEFAULT 'pending_review', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS store_memberships(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, role VARCHAR(24) NOT NULL DEFAULT 'owner', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(store_id,user_id))""",
     """CREATE TABLE IF NOT EXISTS categories(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name VARCHAR(120) UNIQUE NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS products(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, name VARCHAR(180) NOT NULL, slug VARCHAR(220) UNIQUE NOT NULL, brand VARCHAR(120), category VARCHAR(120) NOT NULL, description TEXT, price NUMERIC(12,2) NOT NULL CHECK(price>0), original_price NUMERIC(12,2), discount NUMERIC(5,2) DEFAULT 0, stock INTEGER DEFAULT 0 CHECK(stock>=0), sizes TEXT, colors TEXT, rating NUMERIC(3,2) DEFAULT 0 CHECK(rating>=0 AND rating<=5), review_count INTEGER DEFAULT 0, tags TEXT, image_url TEXT NOT NULL, additional_images TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS cart_items(id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, quantity INTEGER NOT NULL CHECK(quantity>0), size VARCHAR(30), color VARCHAR(50), UNIQUE(user_id,product_id,size,color))""",
@@ -103,6 +107,7 @@ def init_db():
 
     iddef = "INTEGER PRIMARY KEY AUTOINCREMENT" if IS_SQLITE else "BIGSERIAL PRIMARY KEY"
     ddl.extend([
+    f"""CREATE TABLE IF NOT EXISTS api_refresh_tokens(id {iddef}, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, jti_hash VARCHAR(64) UNIQUE NOT NULL, expires_at TIMESTAMP NOT NULL, revoked_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     f"""CREATE TABLE IF NOT EXISTS admins(id {iddef}, username VARCHAR(80) UNIQUE NOT NULL, email VARCHAR(180) UNIQUE NOT NULL, full_name VARCHAR(120) NOT NULL, password_hash VARCHAR(255) NOT NULL, role VARCHAR(20) NOT NULL DEFAULT 'admin', is_active INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
     f"""CREATE TABLE IF NOT EXISTS admin_permissions(id {iddef}, admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE, permission VARCHAR(80) NOT NULL, UNIQUE(admin_id,permission))""",
     f"""CREATE TABLE IF NOT EXISTS payments(id {iddef}, order_id INTEGER UNIQUE NOT NULL REFERENCES orders(id) ON DELETE CASCADE, method VARCHAR(40) NOT NULL, amount NUMERIC(12,2) NOT NULL, transaction_ref VARCHAR(120), proof_path TEXT, status VARCHAR(40) NOT NULL DEFAULT 'Pending Verification', rejection_reason TEXT, verified_by INTEGER REFERENCES admins(id) ON DELETE SET NULL, verified_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
@@ -122,6 +127,7 @@ def init_db():
             ("products","min_stock","INTEGER DEFAULT 5"),("products","status","VARCHAR(20) DEFAULT 'active'"),("products","featured","INTEGER DEFAULT 0"),
             ("orders","order_number","VARCHAR(40)"),("orders","subtotal","NUMERIC(12,2) DEFAULT 0"),("orders","discount","NUMERIC(12,2) DEFAULT 0"),("orders","shipping_fee","NUMERIC(12,2) DEFAULT 0"),("orders","updated_at","TIMESTAMP"),
             ("addresses","province","VARCHAR(80)"),("addresses","area","VARCHAR(120)"),("addresses","is_default","INTEGER DEFAULT 0"),
+            ("products","store_id","INTEGER REFERENCES stores(id) ON DELETE SET NULL"),
         ]
         for table,col,typ in migrations:
             try: c.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {typ}"))
@@ -160,6 +166,10 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_order_items_product ON order_items(product_id)",
             "CREATE INDEX IF NOT EXISTS idx_tryon_user_created ON tryon_history(user_id,created_at)",
             "CREATE INDEX IF NOT EXISTS idx_tryon_job_user ON tryon_history(job_id,user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_stores_owner ON stores(owner_user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_store_memberships_user ON store_memberships(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_products_store ON products(store_id)",
+            "CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON api_refresh_tokens(user_id)",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_orders_order_number ON orders(order_number)",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_transaction_ref ON payments(transaction_ref) WHERE transaction_ref IS NOT NULL"
         ]:
@@ -376,6 +386,124 @@ def admin_logout():
     session.clear()
     return redirect(url_for("home"))
 
+# JWT Bearer API authentication is separate from the existing CSRF-protected browser session.
+JWT_ALGORITHM = "HS256"
+JWT_SECRET = os.getenv("JWT_SECRET_KEY") or app.config["SECRET_KEY"]
+JWT_ACCESS_SECONDS = max(300, min(parse_int(os.getenv("JWT_ACCESS_SECONDS"), 900), 3600))
+JWT_REFRESH_DAYS = max(1, min(parse_int(os.getenv("JWT_REFRESH_DAYS"), 14), 30))
+
+def _issue_access_token(user_id):
+    now = datetime.now(timezone.utc)
+    return jwt.encode({"sub": str(user_id), "type": "access", "iat": now, "exp": now + timedelta(seconds=JWT_ACCESS_SECONDS), "jti": secrets.token_urlsafe(24)}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def _issue_refresh_token(user_id):
+    now = datetime.now(timezone.utc)
+    jti = secrets.token_urlsafe(32)
+    expiry = now + timedelta(days=JWT_REFRESH_DAYS)
+    token = jwt.encode({"sub": str(user_id), "type": "refresh", "iat": now, "exp": expiry, "jti": jti}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    with engine.begin() as c:
+        c.execute(text("INSERT INTO api_refresh_tokens(user_id,jti_hash,expires_at) VALUES(:u,:j,:e)"), {"u": user_id, "j": hashlib.sha256(jti.encode()).hexdigest(), "e": expiry.replace(tzinfo=None)})
+    return token
+
+def _decode_bearer(expected_type="access"):
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return None, (jsonify(error="A Bearer access token is required."), 401)
+    try:
+        claims = jwt.decode(header[7:].strip(), JWT_SECRET, algorithms=[JWT_ALGORITHM], options={"require": ["sub", "exp", "iat", "jti", "type"]})
+    except jwt.ExpiredSignatureError:
+        return None, (jsonify(error="Your access token has expired. Please refresh your session."), 401)
+    except jwt.InvalidTokenError:
+        return None, (jsonify(error="The access token is invalid."), 401)
+    if claims.get("type") != expected_type:
+        return None, (jsonify(error="The token type is not valid for this request."), 401)
+    try:
+        uid = int(claims["sub"])
+    except (TypeError, ValueError):
+        return None, (jsonify(error="The access token is invalid."), 401)
+    user = one("SELECT id,full_name,email,username,role,is_active FROM users WHERE id=:u", {"u": uid})
+    if not user or not user["is_active"]:
+        return None, (jsonify(error="This account is unavailable."), 401)
+    return (claims, user), None
+
+def jwt_required(f):
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        auth, error = _decode_bearer("access")
+        if error: return error
+        request.jwt_claims, request.jwt_user = auth
+        return f(*args, **kwargs)
+    return wrapped
+
+@app.get("/api/auth/csrf")
+def api_auth_csrf():
+    return jsonify(csrf_token=csrf_token())
+
+@app.post("/api/auth/signup")
+def api_auth_signup():
+    data=request.get_json(silent=True) or {}
+    name=str(data.get("full_name","")).strip(); email=str(data.get("email","")).strip().lower()
+    username=str(data.get("username","")).strip(); password=str(data.get("password",""))
+    if not name or len(name)>120: return jsonify(error="Please enter a valid full name."),400
+    if not valid_email(email) or len(email)>180: return jsonify(error="Please enter a valid email address."),400
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,80}",username): return jsonify(error="Invalid username."),400
+    if len(password)<8 or len(password)>128: return jsonify(error="Password must be between 8 and 128 characters."),400
+    try:
+        with engine.begin() as c:
+            uid=c.execute(text("INSERT INTO users(full_name,email,username,password_hash) VALUES(:n,:e,:u,:p) RETURNING id"),{"n":name,"e":email,"u":username,"p":generate_password_hash(password)}).scalar_one()
+    except Exception:
+        return jsonify(error="Email or username is already in use."),409
+    user=one("SELECT id,full_name,email,username,role,is_active FROM users WHERE id=:u",{"u":uid})
+    return jsonify(message="Account created successfully.",user=user,access_token=_issue_access_token(uid),refresh_token=_issue_refresh_token(uid),token_type="Bearer",expires_in=JWT_ACCESS_SECONDS),201
+
+@app.post("/api/auth/login")
+def api_auth_login():
+    data=request.get_json(silent=True) or {}; identity=str(data.get("username",data.get("email",""))).strip()
+    user=one("SELECT * FROM users WHERE username=:u OR email=:u",{"u":identity})
+    if not user or not user["is_active"] or not check_password_hash(user["password_hash"],str(data.get("password",""))):
+        return jsonify(error="Invalid email/username or password, or account disabled."),401
+    return jsonify(message="Login successful.",user={"id":user["id"],"full_name":user["full_name"],"email":user["email"],"username":user["username"],"role":user.get("role","customer")},access_token=_issue_access_token(user["id"]),refresh_token=_issue_refresh_token(user["id"]),token_type="Bearer",expires_in=JWT_ACCESS_SECONDS)
+
+@app.post("/api/auth/refresh")
+def api_auth_refresh():
+    data=request.get_json(silent=True) or {}
+    try: claims=jwt.decode(str(data.get("refresh_token","")),JWT_SECRET,algorithms=[JWT_ALGORITHM],options={"require":["sub","exp","iat","jti","type"]})
+    except jwt.InvalidTokenError: return jsonify(error="The refresh token is invalid or expired. Please log in again."),401
+    if claims.get("type")!="refresh": return jsonify(error="A refresh token is required."),401
+    try: uid=int(claims["sub"])
+    except (TypeError,ValueError): return jsonify(error="The refresh token is invalid."),401
+    digest=hashlib.sha256(str(claims["jti"]).encode()).hexdigest()
+    user=one("SELECT id,is_active FROM users WHERE id=:u",{"u":uid})
+    if not user or not user["is_active"]: return jsonify(error="This account is unavailable."),401
+    with engine.begin() as c:
+        old=c.execute(text("SELECT id FROM api_refresh_tokens WHERE user_id=:u AND jti_hash=:j AND revoked_at IS NULL AND expires_at>CURRENT_TIMESTAMP"),{"u":uid,"j":digest}).first()
+        if not old: return jsonify(error="The refresh token has already been used or revoked. Please log in again."),401
+        consumed=c.execute(text("UPDATE api_refresh_tokens SET revoked_at=CURRENT_TIMESTAMP WHERE id=:i AND revoked_at IS NULL RETURNING id"),{"i":old[0]}).first()
+        if not consumed: return jsonify(error="The refresh token has already been used or revoked. Please log in again."),401
+    return jsonify(message="Session refreshed.",access_token=_issue_access_token(uid),refresh_token=_issue_refresh_token(uid),token_type="Bearer",expires_in=JWT_ACCESS_SECONDS)
+
+@app.post("/api/auth/logout")
+def api_auth_logout():
+    data=request.get_json(silent=True) or {}
+    try:
+        claims=jwt.decode(str(data.get("refresh_token","")),JWT_SECRET,algorithms=[JWT_ALGORITHM],options={"require":["sub","exp","iat","jti","type"]})
+        if claims.get("type")!="refresh": raise jwt.InvalidTokenError("wrong token type")
+        digest=hashlib.sha256(str(claims["jti"]).encode()).hexdigest()
+        with engine.begin() as c: c.execute(text("UPDATE api_refresh_tokens SET revoked_at=CURRENT_TIMESTAMP WHERE jti_hash=:j AND revoked_at IS NULL"),{"j":digest})
+    except jwt.InvalidTokenError: pass
+    return jsonify(message="You have been logged out.")
+
+@app.get("/api/v1/me")
+@jwt_required
+def api_jwt_me():
+    u=request.jwt_user
+    return jsonify(user={"id":u["id"],"full_name":u["full_name"],"email":u["email"],"username":u["username"],"role":u.get("role","customer")})
+
+@app.get("/api/v1/orders")
+@jwt_required
+def api_jwt_orders():
+    return jsonify(orders=rows("SELECT id,order_number,total,payment_status,status,created_at FROM orders WHERE user_id=:u ORDER BY created_at DESC LIMIT 100",{"u":request.jwt_user["id"]}))
+
 @app.get("/wishlist")
 @login_required
 def wishlist():
@@ -437,8 +565,10 @@ def remove_cart(item_id):
 @app.route("/checkout",methods=["GET","POST"])
 @login_required
 def checkout():
-    items=rows("SELECT c.*,p.name,p.price,p.stock,p.status,p.image_url FROM cart_items c JOIN products p ON p.id=c.product_id WHERE c.user_id=:u",{"u":session["user_id"]})
+    items=rows("SELECT c.*,p.name,p.price,p.stock,p.status,p.image_url,p.store_id FROM cart_items c JOIN products p ON p.id=c.product_id WHERE c.user_id=:u",{"u":session["user_id"]})
     if not items:return redirect(url_for("cart"))
+    if len({i.get("store_id") for i in items}) > 1:
+        return render_template("cart.html", items=items, error="Your bag contains products from different stores. Please place separate orders for each store.")
     subtotal=sum(float(i["price"])*int(i["quantity"]) for i in items)
     shipping=0 if subtotal>=5000 else 250
     total=subtotal+shipping
@@ -695,7 +825,8 @@ def admin():
     payments=rows("SELECT p.*,o.order_number,u.full_name FROM payments p JOIN orders o ON o.id=p.order_id JOIN users u ON u.id=o.user_id ORDER BY p.created_at DESC LIMIT 30")
     chart_status=rows("SELECT status,COUNT(*) n FROM orders GROUP BY status")
     chart_categories=rows("SELECT p.category,SUM(oi.quantity*oi.price) sales FROM order_items oi JOIN products p ON p.id=oi.product_id GROUP BY p.category ORDER BY sales DESC LIMIT 8")
-    return render_template("admin.html",stats=stats,orders=orders,products=products,categories=cats,payments=payments,chart_status=chart_status,chart_categories=chart_categories,admin_role=session.get("admin_role"),edit_product=edit_product)
+    stores=rows("SELECT s.*,u.username owner_username FROM stores s JOIN users u ON u.id=s.owner_user_id ORDER BY s.created_at DESC LIMIT 100")
+    return render_template("admin.html",stats=stats,orders=orders,products=products,categories=cats,payments=payments,chart_status=chart_status,chart_categories=chart_categories,admin_role=session.get("admin_role"),edit_product=edit_product,stores=stores)
 
 @app.post("/admin/product")
 @admin_required("manage_products")
@@ -848,6 +979,103 @@ def superadmin_permissions(aid):
         c.execute(text("DELETE FROM admin_permissions WHERE admin_id=:a"),{"a":aid})
         for perm in selected & ADMIN_PERMISSIONS:c.execute(text("INSERT INTO admin_permissions(admin_id,permission) VALUES(:a,:p)"),{"a":aid,"p":perm})
     admin_audit("admin_permissions_updated","admin",aid,",".join(sorted(selected)));return redirect(url_for("superadmin"))
+@app.get("/stores/<slug>")
+def public_store(slug):
+    store=one("SELECT id,name,slug,description,status FROM stores WHERE slug=:s AND status='approved'",{"s":slug})
+    if not store: abort(404)
+    products=product_query("WHERE p.store_id=:s AND p.status='active'",{"s":store["id"]},order="p.created_at DESC",limit=48)
+    return render_template("storefront.html",store=store,products=products)
+
+@app.post("/stores/apply")
+@login_required
+def store_apply():
+    uid=session["user_id"]; name=request.form.get("name","").strip(); desc=request.form.get("description","").strip()
+    email=request.form.get("contact_email","").strip().lower(); phone=request.form.get("contact_phone","").strip()
+    if not name or len(name)>120 or len(desc)>2000: abort(400,"Enter a valid store name and description.")
+    if email and (not valid_email(email) or len(email)>180): abort(400,"Enter a valid store contact email.")
+    if len(phone)>40: abort(400,"Store contact phone is too long.")
+    if one("SELECT id FROM stores WHERE owner_user_id=:u",{"u":uid}): abort(400,"You already have a store application.")
+    slug=re.sub(r"[^a-z0-9]+","-",name.lower()).strip("-")[:130] or f"store-{secrets.token_hex(4)}"
+    if one("SELECT id FROM stores WHERE slug=:s",{"s":slug}): slug=f"{slug}-{secrets.token_hex(3)}"
+    with engine.begin() as c:
+        sid=c.execute(text("INSERT INTO stores(owner_user_id,name,slug,description,contact_email,contact_phone,status) VALUES(:u,:n,:s,:d,:e,:p,'pending_review') RETURNING id"),{"u":uid,"n":name,"s":slug,"d":desc,"e":email or None,"p":phone or None}).scalar_one()
+        c.execute(text("INSERT INTO store_memberships(store_id,user_id,role) VALUES(:s,:u,'owner')"),{"s":sid,"u":uid})
+    flash("Store application submitted. You can manage your store after platform approval.","success")
+    return redirect(url_for("vendor_dashboard"))
+
+@app.get("/vendor")
+@login_required
+def vendor_dashboard():
+    store=one("SELECT * FROM stores WHERE owner_user_id=:u",{"u":session["user_id"]})
+    if not store: return render_template("vendor.html",store=None,products=[],orders=[],stats=None,edit_product=None)
+    products=rows("SELECT id,name,slug,price,stock,status FROM products WHERE store_id=:s ORDER BY created_at DESC",{"s":store["id"]})
+    edit_id=parse_int(request.args.get("edit"),0,0)
+    edit_product=one("SELECT id,name,price,stock,sizes,colors,description,image_url FROM products WHERE id=:p AND store_id=:s",{"p":edit_id,"s":store["id"]}) if edit_id else None
+    orders=rows("""SELECT DISTINCT o.id,o.order_number,o.total,o.status,o.payment_status,o.created_at FROM orders o
+        JOIN order_items oi ON oi.order_id=o.id JOIN products p ON p.id=oi.product_id
+        WHERE p.store_id=:s AND NOT EXISTS (SELECT 1 FROM order_items oi2 JOIN products p2 ON p2.id=oi2.product_id
+          WHERE oi2.order_id=o.id AND (p2.store_id IS NULL OR p2.store_id<>:s)) ORDER BY o.created_at DESC LIMIT 30""",{"s":store["id"]})
+    stats={"products":len(products),"orders":len(orders),"sales":float(one("""SELECT COALESCE(SUM(oi.quantity*oi.price),0) n FROM order_items oi
+        JOIN products p ON p.id=oi.product_id JOIN orders o ON o.id=oi.order_id WHERE p.store_id=:s
+        AND o.status NOT IN ('Cancelled','Refunded') AND o.payment_status IN ('Verified','Paid')""",{"s":store["id"]})["n"])}
+    return render_template("vendor.html",store=store,products=products,orders=orders,stats=stats,edit_product=edit_product)
+
+@app.post("/vendor/product")
+@login_required
+def vendor_product():
+    store=one("SELECT * FROM stores WHERE owner_user_id=:u",{"u":session["user_id"]})
+    if not store or store["status"]!="approved": abort(403,"Your store must be approved before you can manage products.")
+    f=request.form; pid=parse_int(f.get("id"),0,0); name=f.get("name","").strip()
+    price=parse_money(f.get("price"),0); stock=parse_int(f.get("stock"),0,0,1000000)
+    sizes=f.get("sizes","One Size").strip() or "One Size"; colors=f.get("colors","Black").strip() or "Black"
+    desc=f.get("description","").strip(); image=f.get("image_url","").strip(); upload=request.files.get("image_file")
+    if upload and upload.filename: image=save_product_image(upload)
+    if not name or len(name)>180 or price<=0 or len(desc)>4000: abort(400,"Check product name, price, and description.")
+    if pid:
+        existing=one("SELECT id,image_url FROM products WHERE id=:p AND store_id=:s",{"p":pid,"s":store["id"]})
+        if not existing: abort(404)
+        image=image or existing["image_url"]
+        if image and urlparse(image).scheme not in {"http","https"}: abort(400,"Product image must use HTTP(S).")
+        with engine.begin() as c:
+            c.execute(text("UPDATE products SET name=:n,price=:pr,stock=:st,sizes=:sz,colors=:co,description=:d,image_url=:img,updated_at=CURRENT_TIMESTAMP WHERE id=:p AND store_id=:s"),{"n":name,"pr":price,"st":stock,"sz":sizes,"co":colors,"d":desc,"img":image,"p":pid,"s":store["id"]})
+    else:
+        slug=re.sub(r"[^a-z0-9]+","-",name.lower()).strip("-")[:200] or f"product-{secrets.token_hex(4)}"
+        if one("SELECT id FROM products WHERE slug=:s",{"s":slug}): slug=f"{slug}-{secrets.token_hex(3)}"
+        image=image or "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?auto=format&fit=crop&w=900&q=85"
+        if urlparse(image).scheme not in {"http","https"}: abort(400,"Product image must use HTTP(S).")
+        with engine.begin() as c:
+            c.execute(text("INSERT INTO products(name,slug,brand,category,description,price,original_price,discount,stock,sizes,colors,tags,image_url,status,featured,store_id) VALUES(:n,:slug,:brand,'Other / Accessories',:d,:pr,:pr,0,:st,:sz,:co,'vendor',:img,'active',0,:s)"),{"n":name,"slug":slug,"brand":store["name"],"d":desc or name,"pr":price,"st":stock,"sz":sizes,"co":colors,"img":image,"s":store["id"]})
+    flash("Store product saved.","success")
+    return redirect(url_for("vendor_dashboard"))
+
+@app.post("/vendor/order/<int:oid>")
+@login_required
+def vendor_order_update(oid):
+    store=one("SELECT id FROM stores WHERE owner_user_id=:u AND status='approved'",{"u":session["user_id"]})
+    if not store: abort(403)
+    order=one("""SELECT o.* FROM orders o WHERE o.id=:o AND EXISTS (
+        SELECT 1 FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=o.id AND p.store_id=:s)
+        AND NOT EXISTS (SELECT 1 FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=o.id AND (p.store_id IS NULL OR p.store_id<>:s))""",{"o":oid,"s":store["id"]})
+    if not order: abort(404)
+    target=request.form.get("status","").strip()
+    transitions={"Confirmed":{"Processing"},"Processing":{"Packed"},"Packed":{"Shipped"},"Shipped":{"Out for Delivery"},"Out for Delivery":{"Delivered"}}
+    if order["payment_status"] not in {"Verified","Paid"}: abort(400,"Payment must be verified before store fulfillment.")
+    if target not in transitions.get(order["status"],set()): abort(400,"That order status transition is not allowed.")
+    with engine.begin() as c: c.execute(text("UPDATE orders SET status=:st,updated_at=CURRENT_TIMESTAMP WHERE id=:o AND status=:old"),{"st":target,"o":oid,"old":order["status"]})
+    return redirect(url_for("vendor_dashboard"))
+
+@app.post("/admin/store/<int:store_id>/status")
+@admin_required("manage_products")
+def admin_store_status(store_id):
+    status=request.form.get("status","").strip()
+    if status not in {"pending_review","approved","suspended"}: abort(400,"Invalid store status.")
+    if not one("SELECT id FROM stores WHERE id=:s",{"s":store_id}): abort(404)
+    with engine.begin() as c:
+        c.execute(text("UPDATE stores SET status=:st,updated_at=CURRENT_TIMESTAMP WHERE id=:s"),{"st":status,"s":store_id})
+        if status=="suspended": c.execute(text("UPDATE products SET status='draft' WHERE store_id=:s"),{"s":store_id})
+    admin_audit("store_status_changed","store",store_id,status)
+    return redirect(url_for("admin"))
+
 def save_product_image(file_obj):
     raw=file_obj.read()
     if not raw or len(raw)>8*1024*1024: abort(400,"Product image must be under 8MB.")
